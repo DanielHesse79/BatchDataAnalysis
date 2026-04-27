@@ -1,0 +1,10 @@
+variable,role,target,lower_limit,upper_limit,unit,criticality,notes
+feed_rate_day3_mL_h,process,38,28,50,mL/h,CPP,Known yield driver; range should be reviewed against yield and HCP.
+temperature_C,process,36.9,36.2,37.8,C,CPP,Known yield driver and part of HCP interaction risk.
+duration_hours,process,166,150,180,h,CPP,Known part of HCP interaction risk.
+ph_setpoint,process,7.0,6.8,7.4,pH,CPP,Known U-shaped aggregate relationship.
+DO_percent,process,42,30,60,%,process parameter,Example process window.
+yield_g_L,qc,,3.5,,g/L,CQA,Example lower-only QC target.
+purity_percent,qc,,90,,%,CQA,Example lower-only QC spec.
+hcp_ppm,qc,,,250,ppm,CQA,Example upper-only QC spec.
+aggregate_percent,qc,,,5,%,CQA,Example upper-only QC spec.

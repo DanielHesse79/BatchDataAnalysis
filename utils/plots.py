@@ -14,6 +14,14 @@ METHOD_COLORS = {
     "PLS": "#2563eb",
     "Random Forest": "#16a34a",
 }
+SPEC_ZONE_COLORS = {
+    "below_spec": "#dc2626",
+    "near_lower_edge": "#f59e0b",
+    "inside": "#0f766e",
+    "near_upper_edge": "#f59e0b",
+    "above_spec": "#dc2626",
+    "missing": "#94a3b8",
+}
 
 
 def pca_scatter(pca_result: dict, outcome_values: pd.Series) -> go.Figure:
@@ -88,10 +96,11 @@ def variable_importance_bar(
         driver_data = driver_data[driver_data["outcome"] == outcome]
 
     driver_data = driver_data.sort_values("combined_score", ascending=False).head(top_n)
-    driver_data = driver_data.sort_values("combined_score", ascending=True)
+    driver_data["display_label"] = driver_data["process_variable"].astype(str)
+    ordered_labels = driver_data["display_label"].tolist()
 
     method_score_data = driver_data.melt(
-        id_vars=["process_variable", "combined_score"],
+        id_vars=["process_variable", "display_label", "combined_score"],
         value_vars=["pca_score", "pls_score", "rf_score"],
         var_name="method",
         value_name="score",
@@ -103,20 +112,32 @@ def variable_importance_bar(
             "rf_score": "Random Forest",
         }
     )
+    method_score_data["display_label"] = pd.Categorical(
+        method_score_data["display_label"],
+        categories=ordered_labels,
+        ordered=True,
+    )
 
     figure = px.bar(
         method_score_data,
         x="score",
-        y="process_variable",
+        y="display_label",
         color="method",
         orientation="h",
         barmode="stack",
         color_discrete_map=METHOD_COLORS,
+        category_orders={"display_label": ordered_labels},
         template=PLOT_TEMPLATE,
         labels={
             "score": "Method score",
-            "process_variable": "Process variable",
+            "display_label": "Process variable",
             "method": "Method",
+        },
+        hover_data={
+            "process_variable": True,
+            "display_label": False,
+            "combined_score": ":.3f",
+            "score": ":.3f",
         },
     )
     figure.update_layout(height=max(420, 26 * len(driver_data)), margin=dict(l=20, r=20, t=30, b=20))
@@ -156,6 +177,177 @@ def outcome_distribution(dataframe: pd.DataFrame, outcome_col: str) -> go.Figure
 
     figure.update_layout(height=360, margin=dict(l=20, r=20, t=30, b=20), showlegend=False)
     return figure
+
+
+def spec_distribution_plot(
+    dataframe: pd.DataFrame,
+    spec_summary_row: pd.Series,
+) -> go.Figure:
+    """Histogram of a variable with target and spec/window limits overlaid."""
+    variable_name = spec_summary_row["variable"]
+    if variable_name not in dataframe.columns:
+        return empty_figure(f"{variable_name} is not available in the merged data.")
+
+    values = pd.to_numeric(dataframe[variable_name], errors="coerce").dropna()
+    if values.empty:
+        return empty_figure(f"No numeric values available for {variable_name}.")
+
+    figure = px.histogram(
+        x=values,
+        nbins=24,
+        template=PLOT_TEMPLATE,
+        labels={"x": variable_name, "y": "Batch count"},
+    )
+    figure.update_traces(marker_color="#0f766e", opacity=0.78)
+
+    add_spec_reference_lines(figure, spec_summary_row)
+    figure.update_layout(
+        height=390,
+        margin=dict(l=20, r=20, t=30, b=20),
+        showlegend=False,
+    )
+    return figure
+
+
+def spec_margin_bar(spec_summary: pd.DataFrame, top_n: int = 20) -> go.Figure:
+    """Bar chart of variables by percent outside their supplied limits."""
+    if spec_summary.empty:
+        return empty_figure("No spec summary is available.")
+
+    plot_data = spec_summary.copy()
+    plot_data = plot_data.sort_values("percent_outside", ascending=False).head(top_n)
+    ordered_variables = plot_data["variable"].astype(str).tolist()
+    figure = px.bar(
+        plot_data,
+        x="percent_outside",
+        y="variable",
+        color="classification",
+        orientation="h",
+        template=PLOT_TEMPLATE,
+        category_orders={"variable": ordered_variables},
+        labels={
+            "percent_outside": "Batches outside spec/window (%)",
+            "variable": "Variable",
+            "classification": "Assessment",
+        },
+        hover_data=[
+            "role",
+            "percent_inside",
+            "percent_close_to_limit",
+            "used_range_ratio",
+            "reason",
+        ],
+    )
+    figure.update_layout(
+        height=max(380, 28 * len(plot_data)),
+        margin=dict(l=20, r=20, t=30, b=20),
+        xaxis_ticksuffix="%",
+        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="left", x=0),
+    )
+    return figure
+
+
+def outcome_vs_spec_variable_plot(
+    dataframe: pd.DataFrame,
+    spec_summary_row: pd.Series,
+    outcome_col: str,
+) -> go.Figure:
+    """Scatter plot of an outcome against a spec-controlled process variable."""
+    variable_name = spec_summary_row["variable"]
+    if variable_name not in dataframe.columns or outcome_col not in dataframe.columns:
+        return empty_figure("Selected variable or outcome is not available.")
+
+    plot_data = pd.DataFrame(
+        {
+            "variable_value": pd.to_numeric(dataframe[variable_name], errors="coerce"),
+            "outcome_value": pd.to_numeric(dataframe[outcome_col], errors="coerce"),
+            "batch_id": dataframe["batch_id"] if "batch_id" in dataframe.columns else dataframe.index.astype(str),
+        }
+    ).dropna(subset=["variable_value", "outcome_value"])
+
+    if plot_data.empty:
+        return empty_figure(f"No numeric values available for {variable_name} and {outcome_col}.")
+
+    plot_data["spec_zone"] = classify_plot_spec_zones(plot_data["variable_value"], spec_summary_row)
+
+    figure = px.scatter(
+        plot_data,
+        x="variable_value",
+        y="outcome_value",
+        color="spec_zone",
+        color_discrete_map=SPEC_ZONE_COLORS,
+        template=PLOT_TEMPLATE,
+        hover_data=["batch_id"],
+        labels={
+            "variable_value": variable_name,
+            "outcome_value": outcome_col,
+            "spec_zone": "Spec zone",
+        },
+    )
+    figure.update_traces(marker=dict(size=8))
+    add_spec_reference_lines(figure, spec_summary_row)
+    figure.update_layout(
+        height=440,
+        margin=dict(l=20, r=20, t=30, b=20),
+        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="left", x=0),
+    )
+    return figure
+
+
+def add_spec_reference_lines(figure: go.Figure, spec_summary_row: pd.Series) -> None:
+    """Add target/lower/upper vertical reference lines to a figure."""
+    lower_limit = spec_summary_row.get("lower_limit")
+    upper_limit = spec_summary_row.get("upper_limit")
+    target = spec_summary_row.get("target")
+
+    if pd.notna(lower_limit):
+        figure.add_vline(
+            x=float(lower_limit),
+            line_width=2,
+            line_dash="dash",
+            line_color="#dc2626",
+            annotation_text=f"Lower {float(lower_limit):.3g}",
+            annotation_position="top left",
+        )
+    if pd.notna(upper_limit):
+        figure.add_vline(
+            x=float(upper_limit),
+            line_width=2,
+            line_dash="dash",
+            line_color="#dc2626",
+            annotation_text=f"Upper {float(upper_limit):.3g}",
+            annotation_position="top right",
+        )
+    if pd.notna(target):
+        figure.add_vline(
+            x=float(target),
+            line_width=2,
+            line_dash="solid",
+            line_color="#111827",
+            annotation_text=f"Target {float(target):.3g}",
+            annotation_position="bottom right",
+        )
+
+
+def classify_plot_spec_zones(values: pd.Series, spec_summary_row: pd.Series) -> pd.Series:
+    """Classify plot values by spec zone using summary row limits."""
+    lower_limit = spec_summary_row.get("lower_limit")
+    upper_limit = spec_summary_row.get("upper_limit")
+    zones = pd.Series("inside", index=values.index, dtype="object")
+    zones.loc[values.isna()] = "missing"
+
+    if pd.notna(lower_limit):
+        zones.loc[values < lower_limit] = "below_spec"
+    if pd.notna(upper_limit):
+        zones.loc[values > upper_limit] = "above_spec"
+
+    if pd.notna(lower_limit) and pd.notna(upper_limit) and upper_limit > lower_limit:
+        edge_width = 0.10 * (upper_limit - lower_limit)
+        inside_mask = zones.eq("inside")
+        zones.loc[inside_mask & (values <= lower_limit + edge_width)] = "near_lower_edge"
+        zones.loc[inside_mask & (values >= upper_limit - edge_width)] = "near_upper_edge"
+
+    return zones
 
 
 def qc_trend_plot(

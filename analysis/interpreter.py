@@ -10,6 +10,8 @@ from typing import Any, Iterable
 import pandas as pd
 import requests
 
+from analysis.evidence import build_report_pack
+
 try:
     from dotenv import load_dotenv
 except ImportError:  # pragma: no cover - optional until Phase 8 pins dependencies.
@@ -42,6 +44,27 @@ OLLAMA_STOP_MARKERS = (
     "Chain of thought:",
     "YouThinking Process:",
 )
+REPORT_TEXT_REPLACEMENTS = {
+    "\u00a0": " ",
+    "\u00b0": " deg ",
+    "\u00b2": "2",
+    "\u00b3": "3",
+    "\u00b5": "u",
+    "\u2013": "-",
+    "\u2014": "-",
+    "\u2018": "'",
+    "\u2019": "'",
+    "\u201c": '"',
+    "\u201d": '"',
+    "\u2191": "up",
+    "\u2193": "down",
+    "\u2192": "->",
+    "\u2212": "-",
+    "\u2264": "<=",
+    "\u2265": ">=",
+    "\u0394": "Delta ",
+    "\u03b4": "delta ",
+}
 
 
 class OllamaInterpreterError(RuntimeError):
@@ -64,6 +87,9 @@ Rules:
 - Do not reveal chain-of-thought, hidden reasoning, scratch notes, or "Thinking Process" text.
 - Do not output chat-template tokens such as <|endoftext|>, <|im_start|>, <|im_end|>, or <think>.
 - Do not create or mention file paths unless the user explicitly asks for a file.
+- Never assume typical industry specs, thresholds, or release limits. Use only supplied specs/windows from the analysis summary.
+- If specs/windows are missing, say that no spec/window file was supplied.
+- Phrase operational recommendations as investigations unless confirmatory evidence is supplied.
 - Return only final markdown with concise sections. Start with "## Executive Summary".
 """
 
@@ -159,6 +185,7 @@ def stream_interpretation(
     outcomes: list[str],
     model: str,
     base_url: str | None = None,
+    spec_assessment=None,
 ) -> Iterable[str]:
     """Stream markdown interpretation chunks from Ollama."""
     summary = build_interpretation_summary(
@@ -167,6 +194,7 @@ def stream_interpretation(
         analysis_results=analysis_results,
         merged_dataframe=merged_dataframe,
         outcomes=outcomes,
+        spec_assessment=spec_assessment,
     )
     messages = build_ollama_messages(summary)
     base_url = (base_url or get_ollama_base_url()).rstrip("/")
@@ -178,7 +206,7 @@ def stream_interpretation(
         "options": {
             "temperature": 0.15,
             "num_ctx": 8192,
-            "num_predict": 1400,
+            "num_predict": 2200,
             "repeat_penalty": 1.15,
             "repeat_last_n": 256,
             "stop": list(OLLAMA_STOP_MARKERS),
@@ -249,6 +277,7 @@ def generate_interpretation(
     outcomes: list[str],
     model: str,
     base_url: str | None = None,
+    spec_assessment=None,
 ) -> str:
     """Generate a complete non-streamed interpretation."""
     return sanitize_interpretation_text(
@@ -261,6 +290,7 @@ def generate_interpretation(
                 outcomes=outcomes,
                 model=model,
                 base_url=base_url,
+                spec_assessment=spec_assessment,
             )
         )
     )
@@ -269,22 +299,32 @@ def generate_interpretation(
 def build_ollama_messages(summary: dict[str, Any]) -> list[dict[str, str]]:
     """Build chat messages for Ollama's /api/chat endpoint."""
     user_prompt = f"""/no_think
-Interpret this Batch Insight Analyzer result.
+Interpret this Batch Insight Analyzer report pack.
 
 Return markdown with these sections:
 1. Executive summary
 2. Top drivers by outcome
-3. Cross-cutting process patterns
-4. Hypotheses to investigate next
-5. Data quality and confidence notes
+3. Specs and operating-window notes
+4. Cross-cutting process patterns
+5. Hypotheses to investigate next
+6. Data quality and confidence notes
 
 Analysis summary JSON:
 {json.dumps(summary, indent=2)}
 
 Important output rules:
 - Return the final answer only.
+- Use exactly these markdown section headings: ## Executive Summary, ## Top Drivers by Outcome, ## Specs and Operating-Window Notes, ## Cross-Cutting Process Patterns, ## Hypotheses to Investigate Next, ## Data Quality and Confidence Notes.
 - Do not include hidden reasoning, scratchpad text, chat tokens, XML/file tags, or file paths.
 - Label quartile thresholds and high-high interaction screens as exploratory, not optimized setpoints.
+- When historical_response_bands are present, describe broad quartile bands and refined narrow bins separately. The refined bin is more exact but more noise-sensitive. Do not flatten middle-band patterns into "higher is better" or "lower is better".
+- If specs/windows are supplied, call them a historical operating-window assessment, not a proven design space.
+- Distinguish process windows from QC release specs.
+- Never create an "assumed typical specs" section. Use only the supplied spec_challenge_table and out_of_spec_batches.
+- Do not recommend widening or narrowing a spec unless the evidence is clearly sufficient; otherwise say what should be investigated.
+- Do not invent numeric values. Quote exact means, limits, and counts only when they appear in the supplied JSON.
+- When mentioning categorical levels, include the variable name and level together, such as reactor_id=RX-3 or raw_material_lot=RM-005.
+- Prefer the deterministic top_drivers, model_quality, specs_and_windows, categorical_level_effects, numeric_driver_patterns, historical_response_bands, and exploratory_interactions fields over broad inference.
 """
     return [
         {"role": "system", "content": SYSTEM_PROMPT},
@@ -323,7 +363,7 @@ def clean_visible_stream_text(text: str) -> str:
     """Remove small inline artifacts that can appear before a full stop marker."""
     cleaned_text = re.sub(r"<\|[^>]{1,80}\|>", "", text)
     cleaned_text = re.sub(r"</?think>", "", cleaned_text, flags=re.IGNORECASE)
-    return cleaned_text
+    return normalize_report_text(cleaned_text)
 
 
 def sanitize_interpretation_text(text: str) -> str:
@@ -342,7 +382,18 @@ def sanitize_interpretation_text(text: str) -> str:
         flags=re.IGNORECASE,
     )
     cleaned_text = re.sub(r"\n{3,}", "\n\n", cleaned_text)
-    return cleaned_text.strip()
+    return normalize_report_text(cleaned_text).strip()
+
+
+def normalize_report_text(text: str) -> str:
+    """Use plain ASCII punctuation so downloaded Markdown opens cleanly on Windows."""
+    normalized_text = text
+    for original_text, replacement_text in REPORT_TEXT_REPLACEMENTS.items():
+        normalized_text = normalized_text.replace(original_text, replacement_text)
+
+    normalized_text = re.sub(r"\s+deg\s+C", " deg C", normalized_text)
+    normalized_text = re.sub(r"[ \t]{2,}", " ", normalized_text)
+    return normalized_text
 
 
 def build_interpretation_summary(
@@ -351,67 +402,17 @@ def build_interpretation_summary(
     analysis_results: dict[str, Any],
     merged_dataframe: pd.DataFrame,
     outcomes: list[str],
+    spec_assessment=None,
 ) -> dict[str, Any]:
-    """Create a compact JSON-ready summary for the local language model."""
-    ranked_drivers = analysis_results["ranked_drivers"]
-
-    return {
-        "data_profile": {
-            "matched_batch_count": profile_result.matched_batch_count,
-            "process_variable_count": len(profile_result.process_columns),
-            "outcomes": outcomes,
-            "variable_type_counts": profile_result.variable_type_counts,
-            "warnings": profile_result.warnings,
-            "high_missing_columns": dataframe_to_records(
-                profile_result.missingness[profile_result.missingness["flag"]],
-                max_rows=12,
-            ),
-            "near_constant_columns": dataframe_to_records(
-                profile_result.near_constant_columns,
-                max_rows=12,
-            ),
-            "outcome_statistics": dataframe_to_records(profile_result.outcome_statistics),
-        },
-        "preflight_audit": build_audit_summary(audit_result),
-        "top_ranked_drivers_by_outcome": {
-            outcome: dataframe_to_records(
-                ranked_drivers[ranked_drivers["outcome"] == outcome].head(8)
-            )
-            for outcome in outcomes
-        },
-        "model_quality_by_outcome": build_model_quality_summary(analysis_results, outcomes),
-        "pca_summary": {
-            "explained_variance": dataframe_to_records(
-                analysis_results["pca"]["explained_variance"],
-                max_rows=8,
-            ),
-            "top_process_loadings": dataframe_to_records(
-                analysis_results["pca"]["process_loadings"].head(10)
-            ),
-        },
-        "method_specific_top_variables": build_method_specific_summary(
-            analysis_results,
-            outcomes,
-        ),
-        "categorical_level_effects": summarize_categorical_level_effects(
-            merged_dataframe=merged_dataframe,
-            profile_result=profile_result,
-            outcomes=outcomes,
-            ranked_drivers=ranked_drivers,
-        ),
-        "numeric_driver_patterns": summarize_numeric_driver_patterns(
-            merged_dataframe=merged_dataframe,
-            profile_result=profile_result,
-            outcomes=outcomes,
-            ranked_drivers=ranked_drivers,
-        ),
-        "numeric_interaction_screen": summarize_numeric_interactions(
-            merged_dataframe=merged_dataframe,
-            profile_result=profile_result,
-            outcomes=outcomes,
-            ranked_drivers=ranked_drivers,
-        ),
-    }
+    """Create a compact JSON-ready report pack for the local language model."""
+    return build_report_pack(
+        profile_result=profile_result,
+        audit_result=audit_result,
+        analysis_results=analysis_results,
+        merged_dataframe=merged_dataframe,
+        outcomes=outcomes,
+        spec_assessment=spec_assessment,
+    )
 
 
 def build_audit_summary(audit_result) -> dict[str, Any]:
@@ -446,6 +447,78 @@ def build_audit_summary(audit_result) -> dict[str, Any]:
         "multicollinearity_pairs": dataframe_to_records(
             audit_result.multicollinearity_pairs,
             max_rows=12,
+        ),
+    }
+
+
+def build_spec_assessment_summary(spec_assessment) -> dict[str, Any]:
+    """Summarize spec/window assessment results for the local language model."""
+    if spec_assessment is None or not getattr(spec_assessment, "has_specs", False):
+        return {"available": False}
+
+    variable_summary = spec_assessment.variable_summary
+    if variable_summary.empty:
+        return {
+            "available": True,
+            "matched_spec_count": len(spec_assessment.matched_specs),
+            "unmatched_spec_count": len(spec_assessment.unmatched_specs),
+            "warnings": spec_assessment.warnings,
+            "spec_challenge_table": [],
+        }
+
+    challenge_columns = [
+        "variable",
+        "role",
+        "target",
+        "lower_limit",
+        "upper_limit",
+        "unit",
+        "criticality",
+        "count",
+        "percent_inside",
+        "percent_outside",
+        "below_limit_count",
+        "above_limit_count",
+        "percent_close_to_limit",
+        "mean",
+        "std",
+        "min",
+        "max",
+        "used_range_ratio",
+        "median_nearest_limit_margin",
+        "worst_limit_margin",
+        "max_driver_score",
+        "confounding_flag",
+        "classification",
+        "reason",
+    ]
+    available_challenge_columns = [
+        column_name for column_name in challenge_columns if column_name in variable_summary.columns
+    ]
+
+    return {
+        "available": True,
+        "important_instruction": (
+            "Treat this as a historical operating-window assessment. Do not call it a design space. "
+            "Do not recommend changing a spec without confirmatory evidence."
+        ),
+        "matched_spec_count": len(spec_assessment.matched_specs),
+        "unmatched_spec_count": len(spec_assessment.unmatched_specs),
+        "warnings": spec_assessment.warnings,
+        "classification_counts": variable_summary["classification"].value_counts().to_dict()
+        if "classification" in variable_summary.columns
+        else {},
+        "spec_challenge_table": dataframe_to_records(
+            variable_summary[available_challenge_columns],
+            max_rows=20,
+        ),
+        "out_of_spec_batches": dataframe_to_records(
+            spec_assessment.out_of_spec_batches,
+            max_rows=20,
+        ),
+        "outcome_means_by_spec_zone": dataframe_to_records(
+            spec_assessment.outcome_zone_summary,
+            max_rows=40,
         ),
     }
 

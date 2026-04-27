@@ -12,6 +12,8 @@ from typing import Iterable
 
 import pandas as pd
 
+from analysis.normalization import normalize_batch_id_series
+
 
 INTERNAL_BATCH_KEY = "__batch_id_key"
 
@@ -207,7 +209,7 @@ def validate_no_outcome_name_collisions(
 
 def normalize_batch_ids(batch_id_series: pd.Series) -> pd.Series:
     """Normalize batch IDs for matching while preserving the displayed columns."""
-    return batch_id_series.astype("string").str.strip()
+    return normalize_batch_id_series(batch_id_series)
 
 
 def validate_batch_ids(batch_id_series: pd.Series, label: str) -> None:

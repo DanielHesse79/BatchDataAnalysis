@@ -41,6 +41,7 @@ PROJECT_ROOT = Path(__file__).resolve().parent
 DATA_DIRECTORY = PROJECT_ROOT / "data"
 PROCESS_OUTPUT_PATH = DATA_DIRECTORY / "synthetic_process.csv"
 QC_OUTPUT_PATH = DATA_DIRECTORY / "synthetic_qc.csv"
+SPECS_OUTPUT_PATH = DATA_DIRECTORY / "synthetic_specs.csv"
 
 
 def clipped_normal(
@@ -276,12 +277,111 @@ def validate_outputs(process_dataframe: pd.DataFrame, qc_dataframe: pd.DataFrame
         raise ValueError("Process and QC batch IDs should match exactly.")
 
 
+def build_spec_dataframe() -> pd.DataFrame:
+    """Create example process windows and QC specs for the synthetic dataset."""
+    return pd.DataFrame(
+        [
+            {
+                "variable": "feed_rate_day3_mL_h",
+                "role": "process",
+                "target": 38,
+                "lower_limit": 28,
+                "upper_limit": 50,
+                "unit": "mL/h",
+                "criticality": "CPP",
+                "notes": "Known yield driver; range should be reviewed against yield and HCP.",
+            },
+            {
+                "variable": "temperature_C",
+                "role": "process",
+                "target": 36.9,
+                "lower_limit": 36.2,
+                "upper_limit": 37.8,
+                "unit": "C",
+                "criticality": "CPP",
+                "notes": "Known yield driver and part of HCP interaction risk.",
+            },
+            {
+                "variable": "duration_hours",
+                "role": "process",
+                "target": 166,
+                "lower_limit": 150,
+                "upper_limit": 180,
+                "unit": "h",
+                "criticality": "CPP",
+                "notes": "Known part of HCP interaction risk.",
+            },
+            {
+                "variable": "ph_setpoint",
+                "role": "process",
+                "target": 7.0,
+                "lower_limit": 6.8,
+                "upper_limit": 7.4,
+                "unit": "pH",
+                "criticality": "CPP",
+                "notes": "Known U-shaped aggregate relationship.",
+            },
+            {
+                "variable": "DO_percent",
+                "role": "process",
+                "target": 42,
+                "lower_limit": 30,
+                "upper_limit": 60,
+                "unit": "%",
+                "criticality": "process parameter",
+                "notes": "Example process window.",
+            },
+            {
+                "variable": "yield_g_L",
+                "role": "qc",
+                "target": "",
+                "lower_limit": 3.5,
+                "upper_limit": "",
+                "unit": "g/L",
+                "criticality": "CQA",
+                "notes": "Example lower-only QC target.",
+            },
+            {
+                "variable": "purity_percent",
+                "role": "qc",
+                "target": "",
+                "lower_limit": 90,
+                "upper_limit": "",
+                "unit": "%",
+                "criticality": "CQA",
+                "notes": "Example lower-only QC spec.",
+            },
+            {
+                "variable": "hcp_ppm",
+                "role": "qc",
+                "target": "",
+                "lower_limit": "",
+                "upper_limit": 250,
+                "unit": "ppm",
+                "criticality": "CQA",
+                "notes": "Example upper-only QC spec.",
+            },
+            {
+                "variable": "aggregate_percent",
+                "role": "qc",
+                "target": "",
+                "lower_limit": "",
+                "upper_limit": 5,
+                "unit": "%",
+                "criticality": "CQA",
+                "notes": "Example upper-only QC spec.",
+            },
+        ]
+    )
+
+
 def main() -> None:
     rng = np.random.default_rng(RANDOM_SEED)
     DATA_DIRECTORY.mkdir(exist_ok=True)
 
     process_dataframe = build_process_dataframe(rng)
     qc_dataframe, outlier_indices = build_qc_dataframe(process_dataframe, rng)
+    spec_dataframe = build_spec_dataframe()
 
     apply_outlier_runs(process_dataframe, qc_dataframe, outlier_indices, rng)
     introduce_missing_process_values(process_dataframe, rng)
@@ -289,11 +389,13 @@ def main() -> None:
 
     process_dataframe.to_csv(PROCESS_OUTPUT_PATH, index=False)
     qc_dataframe.to_csv(QC_OUTPUT_PATH, index=False)
+    spec_dataframe.to_csv(SPECS_OUTPUT_PATH, index=False)
 
     outlier_batch_ids = process_dataframe.loc[outlier_indices, "batch_id"].sort_values().to_list()
 
     print(f"Wrote {PROCESS_OUTPUT_PATH}")
     print(f"Wrote {QC_OUTPUT_PATH}")
+    print(f"Wrote {SPECS_OUTPUT_PATH}")
     print(f"Process shape: {process_dataframe.shape}")
     print(f"QC shape: {qc_dataframe.shape}")
     print(f"Outlier batches: {', '.join(outlier_batch_ids)}")

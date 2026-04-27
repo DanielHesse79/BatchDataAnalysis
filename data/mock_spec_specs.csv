@@ -1,0 +1,10 @@
+variable,role,target,lower_limit,upper_limit,unit,criticality,notes
+sodium_hydroxide_g,process,100,85,115,g,CPP,Quality worsens near low/high NaOH edges; test for possibly too wide.
+drying_temperature_C,process,56,54,58,C,process parameter,Deliberately tight window with weak planted QC impact.
+drying_time_hours,process,8,6,12,h,CPP,Short drying time increases moisture.
+pH_after_neutralization,process,7.0,6.8,7.3,pH,process parameter,Historical mean is intentionally shifted above target.
+moisture_percent,qc,,,20,%,CQA,Upper release-style QC spec.
+purity_percent,qc,,95,,%,CQA,Lower release-style QC spec.
+yield_percent,qc,,75,,%,business KPI,"Internal yield floor, not a release spec."
+residual_naoh_ppm,qc,,,500,ppm,CQA,Upper residual NaOH spec.
+color_index,qc,,,3.5,index,quality attribute,Upper appearance index spec.
