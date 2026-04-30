@@ -26,9 +26,12 @@ python generate_messy_field_data.py
 # Run the app
 .\.venv\Scripts\python.exe -m streamlit run app.py --server.port 8501
 
-# Tests (pytest, smoke-level — see tests/)
+# Tests (pytest — see tests/)
 .\.venv\Scripts\python.exe -m pytest -q
 .\.venv\Scripts\python.exe -m pytest tests/test_evidence.py::test_specific_thing -q
+
+# Optional CatBoost explainability
+.\.venv\Scripts\python.exe -m pip install -r requirements-optional.txt
 
 # Compile check before commits
 .\.venv\Scripts\python.exe -m compileall -q app.py generate_synthetic_data.py analysis utils
@@ -53,6 +56,7 @@ The pipeline is staged: intake → normalization → aggregation → readiness/m
 - **profiling.py** — variable types, missingness, near-constant columns, outcome stats.
 - **audit.py** — pre-flight checks: leakage, drift, confounding, missingness, outliers, multicollinearity.
 - **methods.py** — PCA, PLS, Random Forest, preprocessing, validation, combined ranked driver table.
+- **advanced_methods.py** — optional CatBoost + native SHAP explanations. This is on-demand and should not make the base app depend on CatBoost.
 - **specs.py** — spec/window normalization, historical margins, OOS batches, Cp/Cpk, conservative challenge labels.
 - **evidence.py** — builds the deterministic report pack consumed by the LLM (and by key_findings). Also computes historical response bands (quartile means + best-observed bin) so middle-band sweet spots aren't flattened to "higher is better".
 - **key_findings.py** — Python-generated source-of-truth findings shown **before** the LLM narrative.
@@ -86,7 +90,7 @@ Cloud model shortcuts (e.g. `nemotron-3-super:cloud`) route data through Ollama 
 
 ## Tests
 
-`tests/` currently covers `aggregation`, `evidence`, `normalization`, and `report_validator` — intake/evidence helpers and validation, not full Streamlit runs. Treat the manual smoke tests in `docs/DEVELOPMENT.md` (synthetic, mock-spec, and messy-field flows) as the end-to-end check.
+`tests/` covers data prep, normalization, aggregation, profiling, audit, specs/windows, deterministic evidence, confidence breakdowns, report validation, synthetic-truth recovery, and optional CatBoost integration when `catboost` is installed. It does not yet click through the Streamlit UI or verify PDF/chart visual fidelity. Treat the manual smoke tests in `docs/DEVELOPMENT.md` (synthetic, mock-spec, and messy-field flows) as the UI-level check.
 
 ## Synthetic test data
 

@@ -78,11 +78,15 @@ works:
 .\.venv\Scripts\python.exe -m streamlit run app.py --server.port 8501
 ```
 
-Run the automated smoke tests:
+Run the automated tests:
 
 ```powershell
 .\.venv\Scripts\python.exe -m pytest -q
 ```
+
+The test suite covers intake helpers, profiling/audit checks, specs/windows,
+deterministic evidence, confidence explanations, report validation, and recovery
+of the planted synthetic relationships.
 
 ## Ollama Setup
 
@@ -110,6 +114,20 @@ Optional `.env` values:
 OLLAMA_BASE_URL=http://localhost:11434
 OLLAMA_MODEL=ministral-3:14b
 ```
+
+## Optional CatBoost Explainability
+
+The main analysis uses PCA, PLS, and Random Forest. An optional CatBoost + native
+SHAP tab is available for deeper non-linear/categorical explanation when
+CatBoost is installed:
+
+```powershell
+.\.venv\Scripts\python.exe -m pip install -r requirements-optional.txt
+```
+
+This optional model does not currently change the main ranked-driver score. Use
+it as a comparison layer when lot, supplier, reactor, operator, or other
+categorical effects may matter.
 
 ## Synthetic Validation Data
 
@@ -241,8 +259,8 @@ page.
 Likely next additions:
 
 - Stronger interpretation template with required synthetic-truth checks.
-- SHAP or CatBoost for better non-linear explanations.
+- Decide whether optional CatBoost/SHAP evidence should influence ranked-driver confidence.
 - OPLS-style interpretation for regulator-familiar root-cause analysis.
 - UMAP as an exploratory visualization layer.
 - DoE/RSM planning tools for optimization work.
-- Broader automated test coverage around full analysis runs, specs, PDFs, and UI behavior.
+- Automated PDF/chart/UI regression checks.

@@ -156,9 +156,9 @@ METHOD_EXPLAINERS = {
     ),
     "catboost_shap": MethodExplainer(
         name="CatBoost + SHAP",
-        short_label="Future non-linear explainability",
+        short_label="Optional non-linear explainability",
         what_it_is=(
-            "A planned model path for stronger categorical handling and global/local feature attribution."
+            "An optional CatBoost model that uses native SHAP values for global and per-batch feature attribution."
         ),
         what_it_can_tell_you=(
             "Which variables drive a tree model overall, and what contributed to an individual batch prediction."
@@ -166,9 +166,11 @@ METHOD_EXPLAINERS = {
         what_it_cannot_prove=(
             "SHAP explains model behavior; it is still not causation."
         ),
-        confidence_guidance="Planned future method; not used in current rankings yet.",
-        next_step="Add after tests and current confidence UI are stable.",
-        status="planned",
+        confidence_guidance=(
+            "Use CatBoost as a comparison layer; it does not currently change the main ranked-driver score."
+        ),
+        next_step="Install CatBoost and run it for selected outcomes when non-linear/categorical patterns matter.",
+        status="optional",
     ),
     "opls": MethodExplainer(
         name="OPLS",

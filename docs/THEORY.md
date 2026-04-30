@@ -325,18 +325,24 @@ effects, response bands, interaction screens, specs, and audit cautions. If the
 LLM and the deterministic findings disagree, trust the deterministic tables and
 regenerate or manually edit the narrative.
 
-## Planned Advanced Methods
+## Optional And Planned Advanced Methods
 
-Two high-value methods are intentionally marked as planned rather than active:
+CatBoost + SHAP is available as an optional, on-demand comparison layer when the
+`catboost` Python package is installed. CatBoost handles categorical variables
+directly, which is useful for lot, supplier, reactor, operator, and site labels.
+The app uses CatBoost's native SHAP values to explain model behavior.
 
-- CatBoost + SHAP: better handling of categorical-heavy SME data and clearer
-  model-behavior explanations, including per-batch feature attributions.
-- OPLS: a chemometrics root-cause view that separates outcome-related variation
-  from structured variation unrelated to the outcome.
+Important caveats:
 
-Neither method currently affects the ranked-driver table. They should be added
-after the present PCA/PLS/Random Forest workflow has broader tests and stable
-validation reporting.
+- CatBoost + SHAP explains the CatBoost model, not the true causal process.
+- It does not currently change the main ranked-driver score.
+- It should be compared against PLS and Random Forest rather than used alone.
+- Time-ordered validation is more important than training fit.
+
+OPLS is still planned. It would add a chemometrics root-cause view that separates
+outcome-related variation from structured variation unrelated to the outcome.
+OPLS should be added with cross-validation and permutation testing before it is
+treated as more than exploratory.
 
 ## Correlation Is Not Causation
 

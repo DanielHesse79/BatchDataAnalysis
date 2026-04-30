@@ -1,0 +1,4 @@
+# Optional advanced explainability dependencies.
+# Install with:
+# .\.venv\Scripts\python.exe -m pip install -r requirements-optional.txt
+catboost==1.2.10

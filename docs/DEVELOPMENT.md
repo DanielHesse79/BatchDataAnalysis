@@ -109,6 +109,21 @@ Runs PCA, PLS, Random Forest, preprocessing, validation, and combined driver
 ranking.
 
 ```text
+analysis/advanced_methods.py
+```
+
+Runs optional advanced models. CatBoost + native SHAP values are available when
+the optional `catboost` package is installed. The result is shown as a
+comparison/explainability layer and does not currently change the main ranked
+driver score.
+
+Install optional dependencies with:
+
+```powershell
+.\.venv\Scripts\python.exe -m pip install -r requirements-optional.txt
+```
+
+```text
 analysis/specs.py
 ```
 
@@ -204,11 +219,29 @@ Run compile checks before committing:
 .\.venv\Scripts\python.exe -m compileall -q app.py generate_synthetic_data.py analysis utils
 ```
 
-Run the automated smoke tests:
+Run the automated tests:
 
 ```powershell
 .\.venv\Scripts\python.exe -m pytest -q
 ```
+
+Current automated coverage includes:
+
+- Data prep: batch ID normalization, duplicate ID rejection, and outcome-name
+  collision handling.
+- Normalization and aggregation: unit-bearing values, decimal commas, qualified
+  values, duplicate batch aggregation, and long-format QC pivoting.
+- Profiling and audit: variable typing, missingness, near-constant columns,
+  leakage-like names, date/sequence drift, confounding categoricals, outliers,
+  and multicollinearity.
+- Specs/windows: planted mock-spec classifications, out-of-spec rows,
+  unmatched spec rows, and duplicate spec-row rejection.
+- Deterministic evidence: response bands, confidence breakdowns, key findings,
+  guardrails, and report validation.
+- Synthetic recovery: the planted yield, purity, aggregate, HCP interaction,
+  BR-3, and Supplier_B stories.
+- Optional CatBoost integration when `catboost` is installed; the test is
+  skipped automatically on lean environments.
 
 Manual smoke test:
 
@@ -284,8 +317,9 @@ validation story.
 
 ## Current Technical Debt
 
-- Automated tests are still early and focus on intake, evidence helpers, and
-  report validation rather than full Streamlit end-to-end behavior.
+- Automated tests now cover the core deterministic pipeline and planted
+  synthetic stories, but they still do not click through the Streamlit UI or
+  validate PDF visual fidelity.
 - Interpretation quality still depends on the selected Ollama model.
 - Report validation is heuristic and should not be treated as final approval.
 - Ranked-driver confidence is practical, not formal statistical validation.
@@ -294,7 +328,8 @@ validation story.
   optimized setpoints.
 - Spec/window classifications are conservative heuristics, not formal
   validation or change-control recommendations.
-- No SHAP or CatBoost yet.
+- CatBoost + native SHAP is optional and on-demand; it is not yet folded into
+  the main ranked-driver score or PDF export.
 - No OPLS implementation yet.
 
 ## Suggested Next Engineering Steps
@@ -304,8 +339,8 @@ validation story.
    hints.
 3. Improve interpretation prompt to require synthetic-validation checks when the
    synthetic column names are present.
-4. Expand tests to cover profiling, audit, full analysis runs, specs, PDF export,
-   and synthetic-truth recovery.
-5. Add SHAP or CatBoost for better non-linear explanations.
-6. Add requirements for reproducible model and report metadata.
-7. Add richer PDF report metadata and optional chart selection.
+4. Expand tests to cover PDF export, chart generation, and Streamlit UI behavior.
+5. Decide how CatBoost/SHAP should influence ranked-driver confidence, if at all.
+6. Add OPLS1 for regulator-familiar root-cause interpretation.
+7. Add requirements for reproducible model and report metadata.
+8. Add richer PDF report metadata and optional chart selection.

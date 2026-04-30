@@ -10,6 +10,10 @@ from pathlib import Path
 import pandas as pd
 import streamlit as st
 
+from analysis.advanced_methods import (
+    get_catboost_shap_dependency_status,
+    run_catboost_shap,
+)
 from analysis.audit import run_preflight_audit
 from analysis.confidence import build_driver_confidence_breakdown
 from analysis.data_prep import (
@@ -256,6 +260,11 @@ def apply_custom_theme() -> None:
         .bia-method-status.planned {
             background: #f4eee2;
             color: var(--bia-warn);
+        }
+
+        .bia-method-status.optional {
+            background: #edf2f7;
+            color: #475569;
         }
 
         .bia-issue-card.blocker {
@@ -1499,7 +1508,7 @@ def render_method_explainers(
     with st.expander(title, expanded=expanded):
         for explainer in explainers:
             status = explainer.status
-            status_label = "planned" if status == "planned" else "available"
+            status_label = status if status in {"available", "optional", "planned"} else "available"
             st.markdown(
                 f"""
                 <div class="bia-help-card">
@@ -1728,6 +1737,101 @@ def render_time_ordered_validation(
     )
 
 
+def render_catboost_shap_tab(
+    merged_dataframe,
+    profile_result,
+    analysis_results,
+    outcome_options: list[str],
+) -> None:
+    """Render optional CatBoost + native SHAP explanations."""
+    render_method_explainers(["catboost_shap"], expanded=False)
+    st.caption(
+        "This optional model is for explanation and comparison. It does not currently change the main ranked-driver score."
+    )
+
+    dependency_status = get_catboost_shap_dependency_status()
+    if not dependency_status["available"]:
+        st.info(dependency_status["message"])
+        st.code(".\\.venv\\Scripts\\python.exe -m pip install catboost", language="powershell")
+        return
+
+    selected_outcome = st.selectbox(
+        "Outcome",
+        options=outcome_options,
+        key="catboost_shap_outcome",
+    )
+    validation_order_column = analysis_results.get("validation_order_column")
+    process_columns = [
+        column_name
+        for column_name in profile_result.process_columns
+        if column_name != validation_order_column
+    ]
+
+    result_key = f"{selected_outcome}::{validation_order_column or 'no_order'}"
+    catboost_results = st.session_state.setdefault("catboost_shap_results", {})
+    run_clicked = st.button(
+        "Run CatBoost + SHAP for selected outcome",
+        key=f"run_catboost_shap_{selected_outcome}",
+    )
+
+    if run_clicked:
+        with st.spinner("Fitting CatBoost and computing native SHAP values..."):
+            catboost_results[result_key] = run_catboost_shap(
+                dataframe=merged_dataframe,
+                process_columns=process_columns,
+                outcome_column=selected_outcome,
+                validation_order_column=validation_order_column,
+            )
+
+    catboost_result = catboost_results.get(result_key)
+    if catboost_result is None:
+        st.info("Run the optional model to compare CatBoost/SHAP against PLS and Random Forest.")
+        return
+
+    if not catboost_result.get("available"):
+        st.warning(catboost_result.get("reason", "CatBoost + SHAP is not available."))
+        return
+
+    metric_columns = st.columns(4)
+    metric_columns[0].metric("Rows used", f"{catboost_result['n_rows_used']:,}")
+    metric_columns[1].metric(
+        "Training R2",
+        format_metric(catboost_result["training_r2"]),
+    )
+    metric_columns[2].metric(
+        "Numeric features",
+        f"{catboost_result['numeric_feature_count']:,}",
+    )
+    metric_columns[3].metric(
+        "Categorical features",
+        f"{catboost_result['categorical_feature_count']:,}",
+    )
+
+    render_time_ordered_validation(
+        "Time-ordered CatBoost validation",
+        catboost_result["time_ordered_validation"],
+        score_label="Test R2",
+    )
+
+    st.markdown("#### CatBoost + SHAP variable importance")
+    st.dataframe(
+        format_numeric_columns(catboost_result["variable_importance"].head(20)),
+        width="stretch",
+        hide_index=True,
+    )
+
+    with st.expander("Long SHAP contribution sample", expanded=False):
+        st.caption(
+            "Positive values push the model prediction upward for that batch; negative values push it downward. "
+            "These are model-behavior explanations, not causal effects."
+        )
+        st.dataframe(
+            format_numeric_columns(catboost_result["shap_values"].head(200)),
+            width="stretch",
+            hide_index=True,
+        )
+
+
 def choose_validation_order_column(audit_result, merged_dataframe) -> str | None:
     """Choose the first audit-detected date/sequence column for ordered validation."""
     if audit_result.date_or_drift_columns.empty:
@@ -1926,9 +2030,9 @@ def render_analysis_results(
             )
 
     with methods_tab:
-        render_method_explainers(["pca", "pls", "random_forest"], expanded=False)
-        pca_method_tab, pls_method_tab, random_forest_method_tab = st.tabs(
-            ["PCA", "PLS regression", "Random Forest"]
+        render_method_explainers(["pca", "pls", "random_forest", "catboost_shap"], expanded=False)
+        pca_method_tab, pls_method_tab, random_forest_method_tab, catboost_shap_method_tab = st.tabs(
+            ["PCA", "PLS regression", "Random Forest", "CatBoost + SHAP"]
         )
 
         with pca_method_tab:
@@ -2034,6 +2138,14 @@ def render_analysis_results(
                     width="stretch",
                     hide_index=True,
                 )
+
+        with catboost_shap_method_tab:
+            render_catboost_shap_tab(
+                merged_dataframe=merged_dataframe,
+                profile_result=profile_result,
+                analysis_results=analysis_results,
+                outcome_options=outcome_options,
+            )
 
     with specs_tab:
         render_method_explainers(["specs"], expanded=False)
@@ -2320,6 +2432,7 @@ def main() -> None:
     st.session_state.setdefault("ollama_interpretation", "")
     st.session_state.setdefault("interpretation_validation_warnings", [])
     st.session_state.setdefault("pdf_report_bytes", None)
+    st.session_state.setdefault("catboost_shap_results", {})
 
     render_sidebar()
     render_header()
@@ -2509,6 +2622,7 @@ def main() -> None:
         st.session_state["ollama_interpretation"] = ""
         st.session_state["interpretation_validation_warnings"] = []
         st.session_state["pdf_report_bytes"] = None
+        st.session_state["catboost_shap_results"] = {}
         st.session_state["audit_result"] = None
 
     if st.session_state["merge_result"] is not None:
@@ -2596,6 +2710,7 @@ def main() -> None:
                     st.session_state["ollama_interpretation"] = ""
                     st.session_state["interpretation_validation_warnings"] = []
                     st.session_state["pdf_report_bytes"] = None
+                    st.session_state["catboost_shap_results"] = {}
                 except (ValueError, SpecError) as error:
                     st.error(str(error))
                     st.session_state["analysis_results"] = None
