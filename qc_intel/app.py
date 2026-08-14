@@ -33,18 +33,19 @@ NOT_VALIDATED = (
 st.set_page_config(page_title="QC Intelligence Layer", page_icon="QC", layout="wide")
 
 
-@st.cache_resource(show_spinner=False)
-def open_connection(database_path: str):
-    """Open the analytics database once per session."""
-    return db.connect(database_path)
-
-
 @st.cache_data(show_spinner="Rebuilding derived statistics...")
 def run_analysis(database_path: str, config_dir: str, cache_token: float):
-    """Rebuild every derived artefact. Keyed so edits to config invalidate it."""
-    connection = db.connect(database_path)
+    """Rebuild every derived artefact. Keyed so edits to config invalidate it.
+
+    The connection lives and dies inside this call. Caching a SQLite connection
+    across Streamlit runs fails, because each run executes on a different
+    script-runner thread and SQLite handles are bound to their creating thread.
+    """
     configs = load_all_method_configs(config_dir)
-    result = analyze(connection, configs)
+    with db.connection_scope(database_path) as connection:
+        result = analyze(connection, configs)
+        ingest_log = db.read_sql(connection, "SELECT * FROM ingest_log ORDER BY ingest_id")
+
     return (
         result.observations,
         result.descriptives,
@@ -54,6 +55,7 @@ def run_analysis(database_path: str, config_dir: str, cache_token: float):
         {key: baseline for key, baseline in result.baselines.items()},
         result.findings,
         configs,
+        ingest_log,
     )
 
 
@@ -159,7 +161,7 @@ def main() -> None:
     cache_token = max(path.stat().st_mtime for path in Path(config_dir).glob("*.toml"))
     (
         observations, descriptives, findings_frame, events,
-        run_series, baselines, findings, configs,
+        run_series, baselines, findings, configs, ingest_log,
     ) = run_analysis(database_path, config_dir, cache_token)
 
     if observations.empty:
@@ -320,11 +322,7 @@ def main() -> None:
             "Every QC observation carries the file and record that produced it, so any "
             "point on a chart can be traced back to its source."
         )
-        connection = open_connection(database_path)
-        st.dataframe(
-            db.read_sql(connection, "SELECT * FROM ingest_log ORDER BY ingest_id"),
-            width="stretch", hide_index=True,
-        )
+        st.dataframe(ingest_log, width="stretch", hide_index=True)
 
         selected_run = st.selectbox("Inspect a run", sorted(observations["run_id"].unique()))
         run_rows = observations[observations["run_id"] == selected_run]

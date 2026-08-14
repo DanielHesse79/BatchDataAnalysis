@@ -6,6 +6,7 @@ PostgreSQL stays a visible, reviewable change rather than an ORM dialect switch.
 
 from __future__ import annotations
 
+from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -38,6 +39,23 @@ def connect(database_path: Path | str = DEFAULT_DATABASE_PATH) -> sqlite3.Connec
     connection.row_factory = sqlite3.Row
     connection.execute("PRAGMA foreign_keys = ON")
     return connection
+
+
+@contextmanager
+def connection_scope(database_path: Path | str = DEFAULT_DATABASE_PATH):
+    """Open a connection for one unit of work, then close it.
+
+    SQLite connections belong to the thread that created them. Streamlit runs
+    each script run on a different script-runner thread, so a connection held
+    across runs raises "SQLite objects created in a thread can only be used in
+    that same thread". Opening an existing database file is cheap; holding the
+    handle is what causes trouble.
+    """
+    connection = connect(database_path)
+    try:
+        yield connection
+    finally:
+        connection.close()
 
 
 def create_schema(connection: sqlite3.Connection) -> None:

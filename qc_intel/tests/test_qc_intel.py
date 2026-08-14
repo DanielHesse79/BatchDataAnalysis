@@ -447,6 +447,67 @@ def test_a_chart_draws_a_line_for_each_event(prototype):
     assert len(event_annotations) == len(events)
 
 
+def test_a_held_connection_breaks_across_threads(prototype):
+    """Documents why the dashboard must not cache a connection.
+
+    Streamlit runs each script run on a different script-runner thread, so a
+    handle kept between runs raises. This test pins the behaviour that the
+    design works around.
+    """
+    import threading
+
+    connection = db.connect(prototype["dir"] / "qc_intel.sqlite")
+    failures: list[Exception] = []
+
+    def query_from_another_thread():
+        try:
+            db.read_sql(connection, "SELECT 1")
+        except Exception as error:  # sqlite3.ProgrammingError, wrapped by pandas
+            failures.append(error)
+
+    worker = threading.Thread(target=query_from_another_thread)
+    worker.start()
+    worker.join()
+    connection.close()
+
+    assert failures, "expected SQLite to refuse a cross-thread connection"
+    assert "thread" in str(failures[0]).lower()
+
+
+def test_a_scoped_connection_works_from_any_thread(prototype):
+    """The fix: open per unit of work rather than holding the handle."""
+    import threading
+
+    database_path = prototype["dir"] / "qc_intel.sqlite"
+    row_counts: list[int] = []
+    failures: list[Exception] = []
+
+    def query_from_another_thread():
+        try:
+            with db.connection_scope(database_path) as connection:
+                row_counts.append(len(db.read_sql(connection, "SELECT * FROM ingest_log")))
+        except Exception as error:
+            failures.append(error)
+
+    worker = threading.Thread(target=query_from_another_thread)
+    worker.start()
+    worker.join()
+
+    assert not failures, f"scoped connection failed: {failures}"
+    assert row_counts and row_counts[0] > 0
+
+
+def test_the_scope_closes_the_connection():
+    """A leaked handle per rerun would exhaust file descriptors over a session."""
+    import sqlite3
+
+    with db.connection_scope(":memory:") as connection:
+        connection.execute("SELECT 1")
+
+    with pytest.raises(sqlite3.ProgrammingError):
+        connection.execute("SELECT 1")
+
+
 def test_a_chart_without_events_still_renders(prototype):
     from qc_intel.app import control_chart
 
