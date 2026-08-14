@@ -59,15 +59,66 @@ class FeaturePreprocessor:
 
 
 def choose_validation_order_column(audit_result, merged_dataframe: pd.DataFrame) -> str | None:
-    """Choose the first audit-detected date/sequence column for ordered validation."""
+    """Choose a column that genuinely orders batches in time.
+
+    The audit flags anything whose name contains "time", which includes
+    durations such as "Drying Time" or "hold_time_hours". Ordering batches by a
+    duration is not a chronology, and the chosen column is also excluded from
+    driver modeling, so a careless pick both invents a time-ordered claim and
+    drops a real process variable. Returning None is the safe outcome.
+    """
     if audit_result is None or audit_result.date_or_drift_columns.empty:
         return None
 
-    for column_name in audit_result.date_or_drift_columns["column"].tolist():
-        if column_name in merged_dataframe.columns:
+    candidate_columns = [
+        column_name
+        for column_name in audit_result.date_or_drift_columns["column"].tolist()
+        if column_name in merged_dataframe.columns
+    ]
+
+    for column_name in candidate_columns:
+        if is_date_ordered_column(merged_dataframe[column_name]):
+            return column_name
+
+    for column_name in candidate_columns:
+        if is_sequence_ordered_column(merged_dataframe[column_name]):
             return column_name
 
     return None
+
+
+def is_date_ordered_column(series: pd.Series, min_parseable_fraction: float = 0.80) -> bool:
+    """Return whether a column reads as calendar dates."""
+    if pd.api.types.is_datetime64_any_dtype(series):
+        return True
+
+    non_missing = series.dropna()
+    if non_missing.empty or pd.api.types.is_numeric_dtype(series):
+        return False
+
+    parsed_dates = pd.to_datetime(non_missing, errors="coerce")
+    return parsed_dates.notna().mean() >= min_parseable_fraction
+
+
+def is_sequence_ordered_column(series: pd.Series, max_range_ratio: float = 3.0) -> bool:
+    """Return whether a column reads as a batch/run counter.
+
+    A counter is whole-numbered, nearly all distinct, and spans a range close to
+    the number of batches. A measured duration fails on the whole-number test,
+    which is what separates "batch_sequence_number" from "Drying Time".
+    """
+    numeric_values = pd.to_numeric(series, errors="coerce").dropna()
+    if len(numeric_values) < 3:
+        return False
+
+    if not np.allclose(numeric_values, numeric_values.round()):
+        return False
+
+    if numeric_values.nunique() / len(numeric_values) < 0.90:
+        return False
+
+    value_span = float(numeric_values.max() - numeric_values.min()) + 1.0
+    return value_span <= max_range_ratio * len(numeric_values)
 
 
 def get_modeling_process_columns(
