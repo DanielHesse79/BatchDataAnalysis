@@ -392,3 +392,70 @@ def test_alert_text_is_deterministic(prototype):
     finding = prototype["result"].findings[0]
 
     assert render_alert(finding) == render_alert(finding)
+
+
+# -------------------------------------------------------------------- charts
+
+def test_every_control_chart_renders_with_its_event_overlay(prototype):
+    """The event overlay is the differentiator, so it must survive rendering.
+
+    Plotly's add_vline positions its annotation by averaging the x values, which
+    raises on a datetime axis; the chart uses an explicit shape instead. Nothing
+    else in the test suite executes the figure code, so this is what stops that
+    regressing.
+    """
+    from qc_intel.app import control_chart
+
+    result = prototype["result"]
+    events = result.events
+    assert not events.empty, "expected laboratory events to overlay"
+
+    rendered = 0
+    for key, series in result.run_series.items():
+        _, _, instrument_id, _ = key
+        window_events = events[
+            (
+                ((events["entity_type"] == "instrument") & (events["entity_id"] == instrument_id))
+                | (events["entity_type"] == "material")
+            )
+            & (events["event_timestamp"] >= series["acquisition_timestamp"].min())
+            & (events["event_timestamp"] <= series["acquisition_timestamp"].max())
+        ]
+        figure = control_chart(
+            series, result.baselines[key], 15.0, window_events, "chart"
+        )
+        assert figure.data, "chart produced no traces"
+        rendered += 1
+
+    assert rendered == len(result.run_series)
+
+
+def test_a_chart_draws_a_line_for_each_event(prototype):
+    from qc_intel.app import control_chart
+
+    result = prototype["result"]
+    key = next(iter(result.run_series))
+    series = result.run_series[key]
+    events = result.events.head(3)
+
+    figure = control_chart(series, result.baselines[key], 15.0, events, "chart")
+
+    event_annotations = [
+        annotation for annotation in figure.layout.annotations
+        if annotation.textangle == -90
+    ]
+    assert len(event_annotations) == len(events)
+
+
+def test_a_chart_without_events_still_renders(prototype):
+    from qc_intel.app import control_chart
+
+    result = prototype["result"]
+    key = next(iter(result.run_series))
+
+    figure = control_chart(
+        result.run_series[key], result.baselines[key], 15.0,
+        result.events.iloc[0:0], "chart",
+    )
+
+    assert figure.data
