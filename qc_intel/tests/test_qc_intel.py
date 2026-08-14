@@ -1,0 +1,394 @@
+"""Tests for the QC Intelligence Layer.
+
+The synthetic dataset carries its planted behaviour in ground_truth.json, so the
+detector tests assert recovery of known patterns rather than reproducing
+hand-computed numbers.
+"""
+
+from pathlib import Path
+
+import numpy as np
+import pandas as pd
+import pytest
+
+from qc_intel import db
+from qc_intel.alerts import render_alert
+from qc_intel.config import ConfigError, load_all_method_configs, load_method_config
+from qc_intel.detectors import find_events_near
+from qc_intel.ingest.generic_tabular import IngestError, import_table, read_tabular
+from qc_intel.pipeline import build_from_scratch, control_false_discovery
+from qc_intel.stats import (
+    align_timestamp_to,
+    apply_false_discovery_control,
+    between_run_cv,
+    build_run_series,
+    coefficient_of_variation,
+    compute_baseline,
+    theil_sen_trend,
+    variance_ratio_p_value,
+    within_run_cv,
+)
+from qc_intel.synth.generate import generate, write_source_files
+
+
+PACKAGE_ROOT = Path(__file__).resolve().parents[1]
+CONFIG_DIR = PACKAGE_ROOT / "config"
+
+
+@pytest.fixture(scope="module")
+def prototype(tmp_path_factory):
+    """Generate, ingest and analyse a full synthetic history once."""
+    working_dir = tmp_path_factory.mktemp("qc_intel")
+    dataset = generate()
+    source_dir = working_dir / "source"
+    write_source_files(dataset, source_dir)
+    connection, result = build_from_scratch(
+        source_dir,
+        working_dir / "qc_intel.sqlite",
+        load_all_method_configs(CONFIG_DIR),
+    )
+    return {"connection": connection, "result": result, "truth": dataset.truth, "dir": working_dir}
+
+
+# --------------------------------------------------------------- statistics
+
+def test_cv_needs_enough_points_and_a_usable_mean():
+    assert np.isnan(coefficient_of_variation(pd.Series([1.0, 2.0])))
+    assert np.isnan(coefficient_of_variation(pd.Series([0.0, 0.0, 0.0])))
+    assert coefficient_of_variation(pd.Series([10.0, 10.0, 10.0, 10.0])) == pytest.approx(0.0)
+
+
+def test_cv_matches_a_hand_computed_value():
+    values = pd.Series([9.0, 10.0, 11.0])  # mean 10, sd 1
+    assert coefficient_of_variation(values) == pytest.approx(10.0)
+
+
+def test_within_and_between_run_cv_measure_different_things():
+    """Pooling them hides which of preparation or injection is degrading."""
+    observations = pd.DataFrame(
+        {
+            "run_id": ["R1", "R1", "R2", "R2", "R3", "R3"],
+            # Replicates agree tightly inside each run, run means differ a lot.
+            "measured_value": [10.0, 10.02, 12.0, 12.02, 14.0, 14.02],
+        }
+    )
+
+    assert within_run_cv(observations) < 0.5
+    assert between_run_cv(observations) > 10.0
+
+
+def test_theil_sen_recovers_a_known_slope():
+    days = np.arange(40)
+    frame = pd.DataFrame(
+        {
+            "acquisition_timestamp": pd.Timestamp("2025-01-01") + pd.to_timedelta(days, unit="D"),
+            "mean_bias_percent": 2.0 + 0.25 * days,
+        }
+    )
+
+    trend = theil_sen_trend(frame)
+
+    assert trend["slope_per_day"] == pytest.approx(0.25, rel=1e-6)
+    assert trend["kendall_p"] < 1e-6
+
+
+def test_theil_sen_ignores_an_isolated_outlier():
+    """QC series contain occasional wild points; the trend should survive them."""
+    days = np.arange(30)
+    values = 1.0 + 0.1 * days
+    values[15] = 95.0
+
+    frame = pd.DataFrame(
+        {
+            "acquisition_timestamp": pd.Timestamp("2025-01-01") + pd.to_timedelta(days, unit="D"),
+            "mean_bias_percent": values,
+        }
+    )
+
+    assert theil_sen_trend(frame)["slope_per_day"] == pytest.approx(0.1, rel=0.05)
+
+
+def test_variance_ratio_p_value_reacts_to_sample_size():
+    """The same CV ratio is not equally convincing at different run counts."""
+    small = variance_ratio_p_value(pd.Series(range(6)), 1.0, 6, recent_cv=6.0, baseline_cv=3.0)
+    large = variance_ratio_p_value(pd.Series(range(40)), 1.0, 40, recent_cv=6.0, baseline_cv=3.0)
+
+    assert large < small
+
+
+def test_false_discovery_control_rejects_a_lone_marginal_result():
+    p_values = pd.Series([0.001, 0.002, 0.003, 0.060])
+
+    survives = apply_false_discovery_control(p_values, alpha=0.05)
+
+    assert survives.tolist() == [True, True, True, False]
+
+
+def test_baseline_uses_only_the_frozen_window():
+    """A baseline recomputed over drifting history hides the drift."""
+    frame = pd.DataFrame(
+        {
+            "acquisition_timestamp": pd.date_range("2025-01-01", periods=20, freq="7D"),
+            "mean_bias_percent": [0.0] * 10 + [20.0] * 10,
+            "mean_measured": [100.0] * 10 + [120.0] * 10,
+        }
+    )
+
+    baseline = compute_baseline(frame, "2025-01-01", "2025-03-01")
+
+    assert baseline.n_runs < 20
+    assert baseline.mean_bias_percent == pytest.approx(0.0)
+
+
+def test_timestamp_alignment_survives_mixed_awareness():
+    """Exports carry timezone-aware times; config files carry plain dates."""
+    aware = pd.Series(pd.date_range("2025-01-01", periods=3, tz="UTC"))
+    naive = pd.Series(pd.date_range("2025-01-01", periods=3))
+
+    assert align_timestamp_to(aware, "2025-01-02").tzinfo is not None
+    assert align_timestamp_to(naive, "2025-01-02").tzinfo is None
+
+
+# ------------------------------------------------------------- configuration
+
+def test_every_shipped_config_loads():
+    configs = load_all_method_configs(CONFIG_DIR)
+
+    assert set(configs) == {"ASSAY_A", "ASSAY_B", "ASSAY_C"}
+    for method_config in configs.values():
+        assert method_config.qc_levels
+        assert method_config.trending.baseline.start
+
+
+def test_a_config_without_a_frozen_baseline_is_rejected(tmp_path):
+    path = tmp_path / "bad.toml"
+    path.write_text(
+        'method_id = "X"\n[acceptance.qc_levels.low]\nnominal = 1.0\n'
+        'max_bias_percent = 15.0\n[trending]\nstep_window_runs = 8\n',
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ConfigError, match="baseline"):
+        load_method_config(path)
+
+
+def test_a_qc_level_without_acceptance_is_rejected(tmp_path):
+    path = tmp_path / "bad.toml"
+    path.write_text(
+        'method_id = "X"\n[acceptance.qc_levels.low]\nnominal = 1.0\n'
+        '[trending.baseline]\nstart = "2025-01-01"\nend = "2025-02-01"\n',
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ConfigError, match="max_bias_percent"):
+        load_method_config(path)
+
+
+# ----------------------------------------------------------------- ingestion
+
+def test_importing_the_same_file_twice_is_refused(tmp_path):
+    """Re-importing would silently double every statistic built on it."""
+    connection = db.reset_database(tmp_path / "test.sqlite")
+    source = tmp_path / "instruments.csv"
+    pd.DataFrame([{"instrument_id": "LCMS-01", "instrument_model": "Xevo"}]).to_csv(
+        source, index=False
+    )
+
+    assert import_table(connection, source, "instrument") == 1
+    assert import_table(connection, source, "instrument", skip_if_imported=True) == 0
+
+    with pytest.raises(db.DuplicateSourceError):
+        import_table(connection, source, "instrument")
+
+
+def test_a_file_missing_required_columns_is_rejected(tmp_path):
+    connection = db.reset_database(tmp_path / "test.sqlite")
+    source = tmp_path / "qc_results.csv"
+    pd.DataFrame([{"qc_level": "low_qc"}]).to_csv(source, index=False)
+
+    with pytest.raises(IngestError, match="missing required column"):
+        import_table(connection, source, "qc_result")
+
+
+def test_an_empty_file_is_rejected(tmp_path):
+    connection = db.reset_database(tmp_path / "test.sqlite")
+    source = tmp_path / "instruments.csv"
+    pd.DataFrame(columns=["instrument_id"]).to_csv(source, index=False)
+
+    with pytest.raises(IngestError, match="no rows"):
+        import_table(connection, source, "instrument")
+
+
+def test_unreadable_files_raise_a_clear_error(tmp_path):
+    """A file whose extension lies about its contents must fail loudly.
+
+    Arbitrary bytes in a .csv are not a good test: pandas will happily read them
+    as a single odd column rather than raising, and the required-column check is
+    what catches that case.
+    """
+    source = tmp_path / "not_really.xlsx"
+    source.write_text("run_id,qc_level\nR1,low_qc\n", encoding="utf-8")
+
+    with pytest.raises(IngestError, match="Could not read"):
+        read_tabular(source)
+
+
+# ------------------------------------------------------- synthetic recovery
+
+def test_every_run_and_result_survives_ingestion(prototype):
+    observations = prototype["result"].observations
+
+    assert observations["run_id"].nunique() == 324
+    assert len(observations) == 1944
+
+
+def test_all_three_instruments_run_all_three_methods(prototype):
+    """A generator that pins a method to one instrument would hide the drift."""
+    observations = prototype["result"].observations
+    coverage = observations.groupby("method_id")["instrument_id"].nunique()
+
+    assert set(coverage) == {3}
+
+
+def test_the_planted_instrument_drift_is_found(prototype):
+    """ASSAY_B on LCMS-02 walks downward from month 4."""
+    truth = prototype["truth"]["gradual_drift"]
+    findings = prototype["result"].findings_frame
+    drift = findings[
+        (findings["rule_id"] == "gradual_drift")
+        & (findings["method_id"] == truth["method_id"])
+        & (findings["instrument_id"] == truth["instrument_id"])
+    ]
+
+    assert not drift.empty
+    assert (drift["magnitude"] < 0).all(), "planted drift is downward"
+    assert (drift["severity"] == "critical").any()
+
+
+def test_the_drift_is_specific_to_the_affected_instrument(prototype):
+    truth = prototype["truth"]["gradual_drift"]
+    findings = prototype["result"].findings_frame
+    other_instruments = findings[
+        (findings["rule_id"] == "gradual_drift")
+        & (findings["method_id"] == truth["method_id"])
+        & (findings["instrument_id"] != truth["instrument_id"])
+    ]
+
+    assert other_instruments.empty
+
+
+def test_the_planted_step_change_is_found(prototype):
+    """ASSAY_C shifts upward at a reference-standard lot change."""
+    truth = prototype["truth"]["step_change"]
+    findings = prototype["result"].findings_frame
+    steps = findings[
+        (findings["rule_id"] == "step_change") & (findings["method_id"] == truth["method_id"])
+    ]
+
+    assert not steps.empty
+    assert (steps["magnitude"] > 0).all(), "planted step is upward"
+
+
+def test_the_step_change_lines_up_with_the_lot_change_event(prototype):
+    """The event overlay is the whole differentiator; it has to line up."""
+    result = prototype["result"]
+    truth = prototype["truth"]["step_change"]
+    step = next(
+        finding for finding in result.findings
+        if finding.rule_id == "step_change" and finding.method_id == truth["method_id"]
+    )
+
+    nearby = find_events_near(
+        result.events, step.instrument_id, step.method_id,
+        pd.Timestamp(step.window_start), lookback_days=200,
+    )
+
+    assert truth["coincides_with"] in set(nearby["event_type"])
+
+
+def test_the_planted_variance_problem_is_found(prototype):
+    truth = prototype["truth"]["variance_increase"]
+    findings = prototype["result"].findings_frame
+    variance = findings[
+        (findings["rule_id"] == "variance_increase")
+        & (findings["method_id"] == truth["method_id"])
+        & (findings["instrument_id"] == truth["instrument_id"])
+    ]
+
+    assert not variance.empty
+    assert (variance["magnitude"] > 0).all(), "spread grew"
+
+
+def test_the_stable_method_produces_no_bias_findings(prototype):
+    """ASSAY_A is the negative control for the bias detectors.
+
+    Variance findings are deliberately not asserted absent here. At this run
+    cadence a doubling of the sample CV is within sampling noise, so a test
+    demanding zero variance false positives would be demanding something the
+    statistics cannot deliver - see README, "What the prototype showed".
+    """
+    truth = prototype["truth"]
+    findings = prototype["result"].findings_frame
+    bias_findings = findings[
+        (findings["method_id"] == truth["stable_method"])
+        & (findings["rule_id"].isin(["gradual_drift", "step_change"]))
+    ]
+
+    assert bias_findings.empty
+
+
+def test_findings_are_ranked_by_acceptance_fraction_within_severity(prototype):
+    findings = prototype["result"].findings_frame
+    for _, rows in findings.groupby("severity", sort=False):
+        fractions = rows["acceptance_fraction"].tolist()
+        assert fractions == sorted(fractions, reverse=True)
+
+
+def test_multiplicity_control_passes_through_untested_rules():
+    """Step change compares by effect size only and runs no hypothesis test."""
+    from qc_intel.detectors import Finding
+
+    untested = Finding(
+        rule_id="step_change", method_id="M", method_version="1", instrument_id="I",
+        qc_level="low_qc", severity="warning", headline="h", magnitude=1.0,
+        magnitude_units="percent_bias", acceptance_fraction=0.5, n_runs=8,
+        window_start="2025-01-01", window_end="2025-02-01", evidence={}, p_value=None,
+    )
+
+    assert control_false_discovery([untested]) == [untested]
+
+
+# --------------------------------------------------------------- provenance
+
+def test_every_qc_row_is_traceable_to_its_source(prototype):
+    observations = prototype["result"].observations
+
+    assert observations["ingest_id"].notna().all()
+    assert observations["source_row"].notna().all()
+
+
+def test_the_ingest_log_records_a_checksum(prototype):
+    log = db.read_sql(prototype["connection"], "SELECT * FROM ingest_log")
+
+    assert not log.empty
+    assert log["source_checksum"].str.len().eq(64).all()
+    assert log["script_version"].notna().all()
+
+
+# ------------------------------------------------------------------- alerts
+
+def test_alert_text_names_the_rule_and_carries_the_caveat(prototype):
+    findings = prototype["result"].findings
+    assert findings, "expected at least one finding to render"
+
+    text = render_alert(findings[0])
+
+    assert findings[0].rule_id in text or "Rule triggered" in text
+    assert "Not a run-acceptance decision" in text
+    assert "%" in text
+
+
+def test_alert_text_is_deterministic(prototype):
+    finding = prototype["result"].findings[0]
+
+    assert render_alert(finding) == render_alert(finding)

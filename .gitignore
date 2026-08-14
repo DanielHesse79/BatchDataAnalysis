@@ -9,3 +9,6 @@ ollama-cuda*.log
 .pytest_cache/
 artifacts/
 .claude/settings.local.json
+
+# QC Intelligence Layer prototype artefacts (regenerate with build_prototype)
+qc_intel/data/

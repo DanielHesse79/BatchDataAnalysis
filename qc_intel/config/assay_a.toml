@@ -1,0 +1,45 @@
+# Configuration for ASSAY_A.
+# Numbers here are illustrative for the synthetic prototype. They are NOT
+# regulatory limits and must be replaced with the values from the method
+# validation report and the analytical plan before any real use.
+
+method_id = "ASSAY_A"
+units = "ng/mL"
+lloq = 1.0
+uloq = 100.0
+notes = "Synthetic prototype configuration."
+
+# Fixed criteria from validation. Never derived from the data.
+[acceptance]
+run_rule = "four_six_fifteen"
+
+[acceptance.qc_levels.low_qc]
+nominal = 3.0
+max_bias_percent = 15.0
+
+[acceptance.qc_levels.mid_qc]
+nominal = 30.0
+max_bias_percent = 15.0
+
+[acceptance.qc_levels.high_qc]
+nominal = 80.0
+max_bias_percent = 15.0
+
+# Exploratory trending. Never shown as pass/fail.
+[trending]
+step_min_shift_fraction = 0.33
+step_window_runs = 8
+trend_min_runs = 8
+trend_min_total_shift_percent = 4.0
+trend_max_kendall_p = 0.05
+variance_cv_ratio = 1.5
+variance_max_p = 0.05
+variance_min_runs = 12
+event_lookback_days = [1, 7, 30]
+
+# Frozen. Never auto-extended: a baseline recomputed over history that already
+# contains the drift inflates the SD until the chart hides the signal.
+[trending.baseline]
+start = "2025-01-01"
+end = "2025-04-30"
+approved_by = "pending"
