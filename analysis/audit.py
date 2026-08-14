@@ -14,11 +14,14 @@ import warnings
 import numpy as np
 import pandas as pd
 
+from analysis.normalization import build_missing_like_mask
+
 
 HIGH_FEATURE_TARGET_CORRELATION_THRESHOLD = 0.95
 MULTICOLLINEARITY_CORRELATION_THRESHOLD = 0.85
 HIGH_CARDINALITY_RATIO_THRESHOLD = 0.20
 HIGH_CARDINALITY_MINIMUM_UNIQUE_VALUES = 20
+MINIMUM_CORRELATION_SAMPLE_SIZE = 8
 
 LEAKAGE_KEYWORDS = [
     "qc",
@@ -409,13 +412,19 @@ def summarize_row_missingness(
     process_columns: list[str],
     outcome_columns: list[str],
 ) -> pd.DataFrame:
-    """Summarize row-level missingness without dropping rows."""
-    selected_columns = process_columns + outcome_columns
-    selected_frame = dataframe[selected_columns]
+    """Summarize row-level missingness without dropping rows.
 
-    rows_with_any_missing = int(selected_frame.isna().any(axis=1).sum())
-    rows_with_missing_outcome = int(dataframe[outcome_columns].isna().any(axis=1).sum())
-    rows_with_missing_process = int(dataframe[process_columns].isna().any(axis=1).sum())
+    Text columns can record a missing result as "n/a", "-", or "not tested". An
+    `isna()`-only count reports those rows as complete.
+    """
+    process_missing_mask = build_missing_value_mask(dataframe, process_columns)
+    outcome_missing_mask = build_missing_value_mask(dataframe, outcome_columns)
+
+    rows_with_missing_process = int(process_missing_mask.any(axis=1).sum())
+    rows_with_missing_outcome = int(outcome_missing_mask.any(axis=1).sum())
+    rows_with_any_missing = int(
+        (process_missing_mask.any(axis=1) | outcome_missing_mask.any(axis=1)).sum()
+    )
     row_count = max(len(dataframe), 1)
 
     rows = [
@@ -441,6 +450,17 @@ def summarize_row_missingness(
         },
     ]
     return pd.DataFrame(rows)
+
+
+def build_missing_value_mask(dataframe: pd.DataFrame, columns: list[str]) -> pd.DataFrame:
+    """Build a boolean missing-value mask that also counts missing-like text."""
+    if not columns:
+        return pd.DataFrame(index=dataframe.index)
+
+    column_masks = [build_missing_like_mask(dataframe[column_name]) for column_name in columns]
+    mask_frame = pd.concat(column_masks, axis=1)
+    mask_frame.columns = list(columns)
+    return mask_frame
 
 
 def detect_numeric_outlier_flags(
@@ -497,24 +517,39 @@ def detect_multicollinearity_pairs(
     dataframe: pd.DataFrame,
     process_columns: list[str],
 ) -> pd.DataFrame:
-    """Flag highly correlated numeric process variable pairs."""
-    numeric_process_columns = [
-        column_name
-        for column_name in process_columns
-        if pd.api.types.is_numeric_dtype(dataframe[column_name])
-        and dataframe[column_name].nunique(dropna=True) >= 3
-    ]
+    """Flag highly correlated numeric process variable pairs.
+
+    One correlation matrix replaces a per-pair DataFrame build, which is what
+    made this check quadratic in wall-clock time on wide exports.
+    """
+    numeric_process_columns = list(
+        dict.fromkeys(
+            column_name
+            for column_name in process_columns
+            if pd.api.types.is_numeric_dtype(dataframe[column_name])
+            and dataframe[column_name].nunique(dropna=True) >= 3
+        )
+    )
     rows = []
 
-    for first_column, second_column in combinations(numeric_process_columns, 2):
-        usable_values = dataframe[[first_column, second_column]].apply(
-            pd.to_numeric,
-            errors="coerce",
-        ).dropna()
-        if len(usable_values) < 8:
-            continue
+    if len(numeric_process_columns) < 2:
+        return dataframe_from_rows(
+            rows,
+            columns=[
+                "first_column",
+                "second_column",
+                "correlation",
+                "absolute_correlation",
+                "why_it_matters",
+            ],
+        )
 
-        correlation = usable_values[first_column].corr(usable_values[second_column])
+    correlation_matrix = dataframe[numeric_process_columns].corr(
+        min_periods=MINIMUM_CORRELATION_SAMPLE_SIZE
+    )
+
+    for first_column, second_column in combinations(numeric_process_columns, 2):
+        correlation = correlation_matrix.at[first_column, second_column]
         if pd.notna(correlation) and abs(correlation) >= MULTICOLLINEARITY_CORRELATION_THRESHOLD:
             rows.append(
                 {

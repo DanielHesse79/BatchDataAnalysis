@@ -28,6 +28,7 @@ VALID_ROLES = {"process", "qc"}
 IMPORTANT_DRIVER_THRESHOLD = 0.55
 LOW_DRIVER_THRESHOLD = 0.20
 EDGE_FRACTION = 0.10
+CAPABILITY_MIN_COUNT = 10
 
 
 class SpecError(ValueError):
@@ -170,6 +171,20 @@ def normalize_spec_dataframe(spec_dataframe: pd.DataFrame) -> pd.DataFrame:
 
     for numeric_column in ["target", "lower_limit", "upper_limit"]:
         normalized[numeric_column] = pd.to_numeric(normalized[numeric_column], errors="coerce")
+
+    # A transposed limit pair makes every batch count as both below and above,
+    # which reports percentages such as 200% outside / -100% inside.
+    crossed_limits = (
+        normalized["lower_limit"].notna()
+        & normalized["upper_limit"].notna()
+        & (normalized["lower_limit"] > normalized["upper_limit"])
+    )
+    if crossed_limits.any():
+        crossed_text = ", ".join(normalized.loc[crossed_limits, "variable"].head(5).tolist())
+        raise SpecError(
+            "Spec file has row(s) where lower_limit is greater than upper_limit. "
+            f"Check these variable(s): {crossed_text}."
+        )
 
     duplicate_variables = normalized["variable"][
         normalized["variable"].duplicated()
@@ -399,7 +414,7 @@ def build_variable_summary_row(
     )
     percent_close_to_limit = safe_percent(close_to_limit_count, count)
 
-    cp, cpk = calculate_capability(usable_values, lower_limit, upper_limit)
+    pp, ppk = calculate_capability(usable_values, lower_limit, upper_limit)
     classification, reason, priority = classify_spec_window(
         role=role,
         count=count,
@@ -437,8 +452,9 @@ def build_variable_summary_row(
         "used_range_ratio": round_or_none(used_range_ratio),
         "median_nearest_limit_margin": median_nearest_margin,
         "worst_limit_margin": worst_margin,
-        "cp": round_or_none(cp),
-        "cpk": round_or_none(cpk),
+        "pp": round_or_none(pp),
+        "ppk": round_or_none(ppk),
+        "capability_basis": describe_capability_basis(limit_kind, ppk),
         "max_driver_score": round_or_none(driver_score),
         "confounding_flag": bool(confounded),
         "classification": classification,
@@ -625,7 +641,13 @@ def build_out_of_spec_rows(
         status.loc[above_mask] = "above_upper_limit"
 
     output_rows = []
-    batch_ids = dataframe["batch_id"] if "batch_id" in dataframe.columns else dataframe.index.astype(str)
+    # The fallback has to stay a Series: a bare Index has no .loc lookup, so any
+    # caller without a batch_id column used to crash on the first flagged row.
+    batch_ids = (
+        dataframe["batch_id"]
+        if "batch_id" in dataframe.columns
+        else pd.Series(dataframe.index.astype(str), index=dataframe.index)
+    )
     for row_index in dataframe.index[outside_mask.fillna(False)]:
         output_rows.append(
             {
@@ -685,27 +707,64 @@ def calculate_capability(
     lower_limit: float,
     upper_limit: float,
 ) -> tuple[float | None, float | None]:
-    """Calculate simple Cp/Cpk when two-sided limits are available."""
+    """Calculate Pp/Ppk performance indices from overall (long-term) sigma.
+
+    These are deliberately reported as Pp/Ppk, not Cp/Cpk. Cp/Cpk are defined on
+    within-subgroup sigma, which needs rational subgroups the batch records here
+    do not carry. The spread used below is the overall sample standard deviation
+    of the supplied batches, which is the Pp/Ppk convention.
+
+    One-sided specs return only ``ppk`` (PpU for an upper-only spec, PpL for a
+    lower-only spec) with ``pp`` unset, because a one-sided spec has no two-sided
+    tolerance width to compare the spread against. The app's own default spec
+    template is mostly one-sided, so this is the common case, not an edge case.
+    """
     usable_values = values.dropna()
-    if (
-        usable_values.shape[0] < 10
-        or pd.isna(lower_limit)
-        or pd.isna(upper_limit)
-        or upper_limit <= lower_limit
-    ):
+    has_lower_limit = pd.notna(lower_limit)
+    has_upper_limit = pd.notna(upper_limit)
+
+    if not has_lower_limit and not has_upper_limit:
+        return None, None
+    if usable_values.shape[0] < CAPABILITY_MIN_COUNT:
+        return None, None
+    if has_lower_limit and has_upper_limit and upper_limit <= lower_limit:
         return None, None
 
     standard_deviation = usable_values.std(ddof=1)
     if pd.isna(standard_deviation) or standard_deviation <= 0:
         return None, None
 
-    mean_value = usable_values.mean()
-    cp = (upper_limit - lower_limit) / (6.0 * standard_deviation)
-    cpk = min(
-        (upper_limit - mean_value) / (3.0 * standard_deviation),
-        (mean_value - lower_limit) / (3.0 * standard_deviation),
+    mean_value = float(usable_values.mean())
+    upper_capability = (
+        (float(upper_limit) - mean_value) / (3.0 * float(standard_deviation))
+        if has_upper_limit
+        else None
     )
-    return float(cp), float(cpk)
+    lower_capability = (
+        (mean_value - float(lower_limit)) / (3.0 * float(standard_deviation))
+        if has_lower_limit
+        else None
+    )
+
+    if has_lower_limit and has_upper_limit:
+        pp = (float(upper_limit) - float(lower_limit)) / (6.0 * float(standard_deviation))
+        return float(pp), float(min(upper_capability, lower_capability))
+
+    one_sided_capability = upper_capability if has_upper_limit else lower_capability
+    return None, float(one_sided_capability)
+
+
+def describe_capability_basis(limit_kind: str, ppk: float | None) -> str:
+    """Name which performance index was actually reported for a spec row."""
+    if ppk is None:
+        return "not_calculated"
+    if limit_kind == "two_sided":
+        return "two_sided_ppk_overall_sigma"
+    if limit_kind == "upper_only":
+        return "upper_one_sided_ppu_overall_sigma"
+    if limit_kind == "lower_only":
+        return "lower_one_sided_ppl_overall_sigma"
+    return "not_calculated"
 
 
 def build_driver_lookup(ranked_drivers: pd.DataFrame | None) -> dict[str, float]:

@@ -7,8 +7,8 @@ from typing import Any
 
 import pandas as pd
 
-from analysis.aggregation import count_duplicate_batch_ids
-from analysis.normalization import normalize_batch_id_series
+from analysis.aggregation import count_duplicate_keys
+from analysis.normalization import normalize_batch_id_series, parse_numeric_series
 
 
 @dataclass(frozen=True)
@@ -64,8 +64,11 @@ def calculate_data_readiness(
     if qc_missing:
         blockers.append(f"QC batch ID column has {qc_missing} missing value(s).")
 
-    process_duplicate_count = count_duplicate_batch_ids(process_dataframe, process_batch_id_column)
-    qc_duplicate_count = count_duplicate_batch_ids(qc_dataframe, qc_batch_id_column)
+    # The batch ID columns are normalized once and the keys are reused below.
+    # Re-normalizing per check ran the same regex work four to six times on
+    # every screen refresh.
+    process_duplicate_count = count_duplicate_keys(process_keys)
+    qc_duplicate_count = count_duplicate_keys(qc_keys)
     details["process_duplicate_batch_ids"] = process_duplicate_count
     details["qc_duplicate_batch_ids"] = qc_duplicate_count
 
@@ -111,8 +114,7 @@ def calculate_data_readiness(
             info.append(f"{len(matched_keys)} candidate batch ID(s) overlap after normalization.")
 
     for outcome_column in outcome_columns:
-        outcome_values = pd.to_numeric(qc_dataframe[outcome_column], errors="coerce")
-        numeric_count = int(outcome_values.notna().sum())
+        numeric_count = count_parseable_numeric_values(qc_dataframe[outcome_column])
         missing_fraction = 1.0 - (numeric_count / max(len(qc_dataframe), 1))
         if numeric_count == 0:
             blockers.append(f"`{outcome_column}` has no numeric values after parsing.")
@@ -135,6 +137,19 @@ def calculate_data_readiness(
         )
 
     return build_result(blockers, warnings, info, details)
+
+
+def count_parseable_numeric_values(series: pd.Series) -> int:
+    """Count values the app's own numeric parser can read.
+
+    Plain `pd.to_numeric` rejects "81,2" and "18.5 %", so a decimal-comma QC
+    export raised a hard readiness blocker for outcomes the app parses fine.
+    """
+    if pd.api.types.is_numeric_dtype(series):
+        return int(series.notna().sum())
+
+    parsed_values, _ = parse_numeric_series(series)
+    return int(parsed_values.notna().sum())
 
 
 def add_parse_report_notes(

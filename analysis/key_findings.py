@@ -31,16 +31,22 @@ def build_deterministic_key_findings(
     merged_dataframe: pd.DataFrame,
     outcomes: list[str],
     spec_assessment=None,
+    report_pack: dict[str, Any] | None = None,
 ) -> pd.DataFrame:
-    """Return compact, Python-generated findings for display before LLM output."""
-    report_pack = build_report_pack(
-        profile_result=profile_result,
-        audit_result=audit_result,
-        analysis_results=analysis_results,
-        merged_dataframe=merged_dataframe,
-        outcomes=outcomes,
-        spec_assessment=spec_assessment,
-    )
+    """Return compact, Python-generated findings for display before LLM output.
+
+    Pass an already-built ``report_pack`` to avoid rebuilding it; the pack is
+    expensive and the UI needs the same one for several panels.
+    """
+    if report_pack is None:
+        report_pack = build_report_pack(
+            profile_result=profile_result,
+            audit_result=audit_result,
+            analysis_results=analysis_results,
+            merged_dataframe=merged_dataframe,
+            outcomes=outcomes,
+            spec_assessment=spec_assessment,
+        )
 
     rows: list[dict[str, str]] = []
     for outcome in outcomes:

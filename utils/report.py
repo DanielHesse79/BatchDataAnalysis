@@ -32,6 +32,9 @@ from analysis.evidence import build_operating_window_hints
 
 MAX_INTERPRETATION_PARAGRAPHS = 45
 MAX_APPENDIX_ROWS = 220
+# A single cell taller than one page aborts the whole PDF build, so cell text is
+# capped well below that.
+MAX_TABLE_CELL_CHARACTERS = 400
 
 
 class ReportGenerationError(RuntimeError):
@@ -83,7 +86,13 @@ def generate_analysis_report_pdf(
     add_spec_section(story, styles, spec_assessment)
     add_appendix_section(story, styles, ranked_drivers)
 
-    document.build(story, onFirstPage=draw_footer, onLaterPages=draw_footer)
+    try:
+        document.build(story, onFirstPage=draw_footer, onLaterPages=draw_footer)
+    except Exception as error:  # ReportLab raises layout errors that are not app errors.
+        raise ReportGenerationError(
+            f"The PDF layout engine could not place the report content: {error}"
+        ) from error
+
     return buffer.getvalue()
 
 
@@ -330,6 +339,7 @@ def add_spec_section(
         "variable",
         "role",
         "percent_outside",
+        "ppk",
         "max_driver_score",
         "classification",
         "reason",
@@ -339,7 +349,15 @@ def add_spec_section(
         build_dataframe_table(
             variable_summary[available_columns],
             max_rows=30,
-            col_widths=[1.5 * inch, 0.55 * inch, 0.75 * inch, 0.75 * inch, 1.05 * inch, 2.15 * inch],
+            col_widths=[
+                1.4 * inch,
+                0.5 * inch,
+                0.7 * inch,
+                0.5 * inch,
+                0.7 * inch,
+                1.0 * inch,
+                1.95 * inch,
+            ][: len(available_columns)],
         )
     )
 
@@ -533,9 +551,14 @@ def build_dataframe_table(
 ) -> Table:
     """Build a ReportLab table from a dataframe."""
     display_dataframe = dataframe.head(max_rows).copy()
-    rows = [[escape_ascii(column) for column in display_dataframe.columns]]
+    rows = [[escape_ascii(shorten_text(str(column), MAX_TABLE_CELL_CHARACTERS)) for column in display_dataframe.columns]]
     for _, row in display_dataframe.iterrows():
-        rows.append([escape_ascii(format_value(row[column])) for column in display_dataframe.columns])
+        rows.append(
+            [
+                escape_ascii(shorten_text(format_value(row[column]), MAX_TABLE_CELL_CHARACTERS))
+                for column in display_dataframe.columns
+            ]
+        )
 
     table_data = [
         [Paragraph(cell, table_cell_style(font_size=font_size)) for cell in row]

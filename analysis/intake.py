@@ -8,7 +8,13 @@ from typing import Any
 
 import pandas as pd
 
-from analysis.data_prep import DataPrepError, validate_non_empty_dataframe
+from analysis.data_prep import (
+    CsvReadResult,
+    DataPrepError,
+    attach_intake_warnings,
+    read_csv_flexibly,
+    validate_non_empty_dataframe,
+)
 
 
 PREVIEW_ROWS = 20
@@ -46,7 +52,9 @@ def inspect_tabular_file(uploaded_file) -> FileInspection:
 
     try:
         if file_extension == ".csv":
-            raw_preview = read_csv_preview(uploaded_file)
+            preview_result = read_csv_preview(uploaded_file)
+            raw_preview = preview_result.dataframe
+            warnings.extend(preview_result.warnings)
             sheets: list[str] = []
             suggested_sheet = None
         elif file_extension in {".xlsx", ".xls"}:
@@ -99,13 +107,16 @@ def load_intake_dataframe(
 
     file_name = getattr(uploaded_file, "name", str(uploaded_file))
     file_extension = Path(file_name).suffix.lower()
+    read_warnings: list[str] = []
 
     try:
         if hasattr(uploaded_file, "seek"):
             uploaded_file.seek(0)
 
         if file_extension == ".csv":
-            dataframe = pd.read_csv(uploaded_file, header=options.header_row)
+            csv_result = read_csv_flexibly(uploaded_file, header=options.header_row)
+            dataframe = csv_result.dataframe
+            read_warnings = csv_result.warnings
         elif file_extension in {".xlsx", ".xls"}:
             dataframe = pd.read_excel(
                 uploaded_file,
@@ -120,18 +131,23 @@ def load_intake_dataframe(
         raise DataPrepError(
             f"Reading {file_extension} files requires an additional Excel dependency."
         ) from error
+    except DataPrepError:
+        raise
     except Exception as error:
         raise DataPrepError(f"Could not read {file_name}: {error}") from error
 
     validate_non_empty_dataframe(dataframe, file_name)
+    attach_intake_warnings(dataframe, read_warnings)
     return dataframe
 
 
-def read_csv_preview(uploaded_file) -> pd.DataFrame:
-    """Read a raw CSV preview without assuming which row is the header."""
-    if hasattr(uploaded_file, "seek"):
-        uploaded_file.seek(0)
-    return pd.read_csv(uploaded_file, header=None, nrows=PREVIEW_ROWS)
+def read_csv_preview(uploaded_file) -> CsvReadResult:
+    """Read a raw CSV preview without assuming which row is the header.
+
+    Field exports often start with a title line above the table, which is the
+    exact case the header-row suggestion exists for. Reading it must not raise.
+    """
+    return read_csv_flexibly(uploaded_file, header=None, nrows=PREVIEW_ROWS)
 
 
 def build_excel_file(uploaded_file) -> pd.ExcelFile:

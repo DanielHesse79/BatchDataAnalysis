@@ -6,6 +6,8 @@ from typing import Any
 
 import pandas as pd
 
+from analysis.methods import USABLE_VALIDATION_R2, get_best_validation_r2
+
 
 MODEL_SCORE_THRESHOLDS = {
     "strong": 0.50,
@@ -107,7 +109,25 @@ def summarize_model_validation(analysis_results: dict[str, Any], outcome: str) -
     rf_oob = format_score(rf_result.get("oob_r2"))
     pls_test = format_score(pls_result.get("time_ordered_validation", {}).get("test_r2"))
     rf_test = format_score(rf_result.get("time_ordered_validation", {}).get("test_r2"))
-    return f"PLS Q2 {pls_q2}; RF OOB R2 {rf_oob}; time-ordered test R2 PLS {pls_test}, RF {rf_test}."
+
+    best_validation_r2 = get_best_validation_r2(pls_result, rf_result)
+    gate_note = (
+        "No model predicted held-out batches well enough "
+        f"(best {format_score(best_validation_r2)} < {USABLE_VALIDATION_R2}), "
+        "so every driver for this outcome is capped at exploratory."
+        if not (
+            best_validation_r2 is not None
+            and pd.notna(best_validation_r2)
+            and float(best_validation_r2) >= USABLE_VALIDATION_R2
+        )
+        else f"Best held-out score {format_score(best_validation_r2)} clears the "
+        f"{USABLE_VALIDATION_R2} bar needed for a confident label."
+    )
+
+    return (
+        f"PLS Q2 {pls_q2} (mean across folds); RF OOB R2 {rf_oob}; "
+        f"time-ordered test R2 PLS {pls_test}, RF {rf_test}. {gate_note}"
+    )
 
 
 def summarize_sample_size(batch_count: int) -> str:

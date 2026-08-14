@@ -30,6 +30,8 @@ This repository contains the working foundation through local interpretation:
 - Combined ranked driver table across methods.
 - Suggested historical response bands for numeric drivers, so middle-band sweet
   spots are not mistaken for simple higher/lower trends.
+- Response-shape plots with raw batch points, binned means, and sweet-spot
+  overlays for top numeric drivers.
 - Deterministic evidence/report-pack layer before LLM interpretation.
 - Heuristic report validation for likely hallucinations or overclaims.
 - Local or Ollama Cloud interpretation.

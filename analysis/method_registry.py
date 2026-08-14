@@ -172,6 +172,78 @@ METHOD_EXPLAINERS = {
         next_step="Install CatBoost and run it for selected outcomes when non-linear/categorical patterns matter.",
         status="optional",
     ),
+    "xgboost_shap": MethodExplainer(
+        name="XGBoost + SHAP",
+        short_label="Optional gradient-boosted explainability",
+        what_it_is=(
+            "An optional gradient-boosted tree model that uses native TreeSHAP values for global and per-batch feature attribution."
+        ),
+        what_it_can_tell_you=(
+            "A third non-linear view of which variables drive the outcome, and how each contributed to an individual batch prediction."
+        ),
+        what_it_cannot_prove=(
+            "SHAP explains model behavior on historical data; it is still not causation."
+        ),
+        confidence_guidance=(
+            "Use it to check whether XGBoost agrees with PLS, Random Forest, and CatBoost; it does not currently change the main ranked-driver score."
+        ),
+        next_step="Install xgboost and run it for selected outcomes when non-linear patterns matter.",
+        status="optional",
+    ),
+    "chronos_forecast": MethodExplainer(
+        name="Chronos-2 Forecast",
+        short_label="Planned time-series drift/early-warning",
+        what_it_is=(
+            "A planned forecasting panel (with a dependency-free EWMA fallback) that projects an outcome's trajectory across the batch sequence."
+        ),
+        what_it_can_tell_you=(
+            "Whether an outcome appears to be drifting over time or across a campaign, as an early-warning signal."
+        ),
+        what_it_cannot_prove=(
+            "Forecasting is not driver ranking; it does not say which process variable caused a change."
+        ),
+        confidence_guidance=(
+            "Only meaningful when the data has real temporal structure (see the audit drift check) and enough ordered points."
+        ),
+        next_step="Ship the EWMA fallback first; add optional Chronos-2 (torch) for longer series.",
+        status="planned",
+    ),
+    "doe_candidates": MethodExplainer(
+        name="DoE Candidates",
+        short_label="Planned design-of-experiment proposals",
+        what_it_is=(
+            "A planned generator of candidate experiment settings (space-filling or factorial) centered on historical response bands."
+        ),
+        what_it_can_tell_you=(
+            "A short list of batches worth running to challenge or confirm a suspected sweet spot."
+        ),
+        what_it_cannot_prove=(
+            "These are candidate experiments to run, never optimized or validated setpoints."
+        ),
+        confidence_guidance=(
+            "Treat every proposal as a hypothesis; coverage notes flag extrapolation outside the historical data cloud."
+        ),
+        next_step="Generate candidates with scipy.stats.qmc around evidence-pack response bands.",
+        status="planned",
+    ),
+    "bayes_opt": MethodExplainer(
+        name="Bayesian Optimization",
+        short_label="Planned experiment proposer",
+        what_it_is=(
+            "A planned proposer that uses a Random Forest surrogate and an acquisition function to rank candidate experiments."
+        ),
+        what_it_can_tell_you=(
+            "Which candidate settings best balance predicted improvement against model uncertainty."
+        ),
+        what_it_cannot_prove=(
+            "Proposals are candidate experiments to run; validity comes from physically running them, which breaks confounding. They are never setpoints."
+        ),
+        confidence_guidance=(
+            "Surrogate predictions inherit the confounding of observational data; the acquisition score is a search aid, not a guarantee."
+        ),
+        next_step="Rank DoE candidates by Expected Improvement / UCB over the RF surrogate.",
+        status="planned",
+    ),
     "opls": MethodExplainer(
         name="OPLS",
         short_label="Future chemometrics root-cause view",

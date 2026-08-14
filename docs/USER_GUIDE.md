@@ -251,6 +251,11 @@ The confidence breakdown table explains why a driver received its practical
 confidence label. It combines method agreement, validation metrics, sample size,
 missingness, and audit cautions. It is not a formal validation or causal proof.
 
+The response-shape plot shows the selected outcome against a top numeric driver.
+Grey points are individual batches. The green line shows binned historical means.
+When a broad response band or best narrow bin is available, the plot highlights
+those regions so sweet spots are visible rather than buried in the table.
+
 If the app sees a middle-band pattern, it shows a suggested historical response
 band. For example, if NaOH quartiles show that yield is highest around 95-107 g
 but lower below and above that region, the app should describe that as a
@@ -310,7 +315,8 @@ It includes:
 Use this tab to generate a plain-language interpretation through Ollama.
 
 Local models keep the interpretation on the machine. Cloud-tagged models may
-send the analysis summary to Ollama Cloud.
+send the analysis summary to Ollama Cloud, so they are hidden until you tick
+`Allow Ollama Cloud models`. A cloud model is never selected for you.
 
 The tab also shows deterministic key findings. If those rows disagree with the
 LLM narrative, trust the deterministic table and regenerate or manually review
@@ -346,6 +352,7 @@ Good options:
 - `qwen3.5:9b`: fast test model.
 - `mistral-small3.2:24b`: slower, often more polished.
 - `nemotron-3-super:cloud`: cloud model; may be higher quality but not local.
+  Requires ticking `Allow Ollama Cloud models` first.
 
 If a model repeats itself, leaks thinking text, or invents file paths, regenerate
 with a different model. The app includes stop tokens and output cleanup, but

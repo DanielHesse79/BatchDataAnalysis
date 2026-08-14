@@ -35,7 +35,11 @@ MISSING_TOKENS = {
 }
 
 QUALIFIER_PATTERN = re.compile(r"^(<=|>=|<|>|~|approx\.?|about)\s*", re.IGNORECASE)
-NUMBER_PATTERN = re.compile(r"[-+]?\d+(?:[\s.,]\d+)*")
+# Matches plain numbers, grouped/decimal-comma numbers, leading-dot decimals, and
+# scientific notation. QC exports (endotoxin, bioburden, titer) routinely use
+# E-notation, so the exponent must be part of the match or values are truncated
+# to their mantissa.
+NUMBER_PATTERN = re.compile(r"[-+]?(?:\d+(?:[\s.,]\d+)*|\.\d+)(?:[eE][-+]?\d+)?")
 HIDDEN_SPACE_PATTERN = re.compile(r"[\u00a0\u200b\u200c\u200d\ufeff]")
 IDENTIFIER_COLUMN_TOKENS = [
     "id",
@@ -139,29 +143,58 @@ def normalize_dataframe_values(
 
 
 def normalize_column_names(dataframe: pd.DataFrame) -> tuple[pd.DataFrame, dict[str, str]]:
-    """Strip, deblank, and make duplicate column names unique."""
+    """Strip, deblank, and make duplicate column names unique.
+
+    The generated suffix must not collide with a name that already exists in the
+    file. A header such as ["temp", "temp", "temp__2"] otherwise produces two
+    `temp__2` columns, and every later `dataframe[column]` lookup silently
+    returns a DataFrame instead of a Series.
+
+    Rename notes are keyed by position, so several columns sharing one original
+    name each keep their own entry.
+    """
     output_dataframe = dataframe.copy()
-    seen: dict[str, int] = {}
+    original_names = [str(column_name).strip() for column_name in output_dataframe.columns]
+    base_names = [
+        clean_column_name(original_name, index)
+        for index, original_name in enumerate(original_names)
+    ]
+    reserved_names = set(base_names)
+
+    used_names: set[str] = set()
     new_columns: list[str] = []
     renamed_columns: dict[str, str] = {}
 
-    for index, original_column in enumerate(output_dataframe.columns):
-        original_name = str(original_column).strip()
-        cleaned_name = HIDDEN_SPACE_PATTERN.sub("", original_name).strip()
-        if not cleaned_name or cleaned_name.lower().startswith("unnamed:"):
-            cleaned_name = f"unnamed_column_{index + 1}"
+    for index, (original_name, base_name) in enumerate(zip(original_names, base_names)):
+        cleaned_name = base_name
+        suffix = 1
+        while cleaned_name in used_names or (
+            cleaned_name != base_name and cleaned_name in reserved_names
+        ):
+            suffix += 1
+            cleaned_name = f"{base_name}__{suffix}"
 
-        base_name = cleaned_name
-        seen[base_name] = seen.get(base_name, 0) + 1
-        if seen[base_name] > 1:
-            cleaned_name = f"{base_name}__{seen[base_name]}"
-
+        used_names.add(cleaned_name)
         if cleaned_name != original_name:
-            renamed_columns[original_name or f"column_{index + 1}"] = cleaned_name
+            renamed_columns[describe_column_position(original_name, index)] = cleaned_name
         new_columns.append(cleaned_name)
 
     output_dataframe.columns = new_columns
     return output_dataframe, renamed_columns
+
+
+def clean_column_name(original_name: str, index: int) -> str:
+    """Clean one column name without worrying about uniqueness."""
+    cleaned_name = HIDDEN_SPACE_PATTERN.sub("", original_name).strip()
+    if not cleaned_name or cleaned_name.lower().startswith("unnamed:"):
+        return f"unnamed_column_{index + 1}"
+    return cleaned_name
+
+
+def describe_column_position(original_name: str, index: int) -> str:
+    """Label a renamed column by position so duplicate names stay distinguishable."""
+    label = original_name or "(blank)"
+    return f"{label} [column {index + 1}]"
 
 
 def normalize_batch_id_series(
@@ -186,8 +219,12 @@ def normalize_batch_id_value(value: Any) -> str | pd.NA:
     if text.lower() in MISSING_TOKENS:
         return pd.NA
 
-    if re.fullmatch(r"\d+\.0", text):
-        text = text[:-2]
+    # Excel writes integer-looking IDs as floats with a varying number of zeros
+    # ("12.0", "12.00"). Stripping only a single ".0" leaves "12.00" unable to
+    # match "12", which shows up as a hard readiness blocker.
+    excel_float_match = re.fullmatch(r"(\d+)\.0+", text)
+    if excel_float_match:
+        text = excel_float_match.group(1)
 
     return text
 
@@ -247,15 +284,38 @@ def parse_numeric_value(value: Any) -> tuple[float | None, str | None]:
         qualifier = qualifier_match.group(1)
         text = text[qualifier_match.end() :].strip()
 
+    plain_value = parse_plain_number(text)
+    if plain_value is not None:
+        return plain_value, qualifier
+
     number_match = NUMBER_PATTERN.search(text)
     if not number_match:
         return None, qualifier
 
     numeric_text = normalize_number_text(number_match.group(0))
     try:
-        return float(numeric_text), qualifier
+        parsed_value = float(numeric_text)
     except ValueError:
         return None, qualifier
+
+    return (parsed_value if math.isfinite(parsed_value) else None), qualifier
+
+
+def parse_plain_number(text: str) -> float | None:
+    """Parse text that is already a valid number, including scientific notation.
+
+    Trying this before the messy-format regex keeps exponents intact; the regex
+    path handles decimal commas, thousands separators, and embedded units.
+    """
+    if not text or "_" in text:
+        return None
+
+    try:
+        value = float(text)
+    except ValueError:
+        return None
+
+    return value if math.isfinite(value) else None
 
 
 def normalize_number_text(number_text: str) -> str:
@@ -284,6 +344,36 @@ def is_missing_like(value: Any) -> bool:
     text = str(value).strip().lower()
     text = HIDDEN_SPACE_PATTERN.sub("", text)
     return text in MISSING_TOKENS
+
+
+def is_text_like_series(series: pd.Series) -> bool:
+    """Return whether a column can hold missing-like text tokens.
+
+    pandas 3 stores text as a dedicated string dtype, so an object-dtype check
+    alone would miss ordinary text columns.
+    """
+    return not (
+        pd.api.types.is_numeric_dtype(series)
+        or pd.api.types.is_bool_dtype(series)
+        or pd.api.types.is_datetime64_any_dtype(series)
+    )
+
+
+def build_missing_like_mask(series: pd.Series) -> pd.Series:
+    """Return a boolean mask of missing values, including text tokens.
+
+    Text columns kept below the numeric parse threshold can carry "n/a", "-",
+    or "not tested". Counting only NaN reports those columns as complete.
+    """
+    if not is_text_like_series(series):
+        return series.isna()
+
+    return pd.Series(
+        [is_missing_like(value) for value in series],
+        index=series.index,
+        dtype=bool,
+        name=series.name,
+    )
 
 
 def example_values(series: pd.Series, max_examples: int = 4) -> str:

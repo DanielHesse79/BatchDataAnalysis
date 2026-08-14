@@ -17,12 +17,18 @@ from sklearn.decomposition import PCA
 from sklearn.ensemble import RandomForestRegressor
 from sklearn.inspection import permutation_importance
 from sklearn.metrics import r2_score
-from sklearn.model_selection import KFold, cross_val_predict
+from sklearn.model_selection import KFold, train_test_split
 from sklearn.preprocessing import OneHotEncoder, StandardScaler
 
 
 RANDOM_STATE = 42
 IMPORTANT_SIGNAL_THRESHOLD = 0.55
+CV_RESULT_COLUMNS = ["n_components", "cv_r2", "cv_r2_std_error", "cv_fold_count"]
+MINIMUM_ROWS_FOR_HELD_OUT_PERMUTATION = 40
+# Below this, cross-validated R2 is not distinguishable from noise, so no driver
+# should carry a confident label no matter how the methods rank it.
+USABLE_VALIDATION_R2 = 0.15
+SMALL_SAMPLE_ROW_COUNT = 30
 
 
 @dataclass(frozen=True)
@@ -50,6 +56,37 @@ class FeaturePreprocessor:
     feature_names: list[str]
     feature_to_process_variable: dict[str, str]
     feature_groups: dict[str, list[int]]
+
+
+def choose_validation_order_column(audit_result, merged_dataframe: pd.DataFrame) -> str | None:
+    """Choose the first audit-detected date/sequence column for ordered validation."""
+    if audit_result is None or audit_result.date_or_drift_columns.empty:
+        return None
+
+    for column_name in audit_result.date_or_drift_columns["column"].tolist():
+        if column_name in merged_dataframe.columns:
+            return column_name
+
+    return None
+
+
+def get_modeling_process_columns(
+    process_columns: list[str],
+    validation_order_column: str | None,
+) -> list[str]:
+    """Drop the ordering column from the modeling features.
+
+    The column that defines the time order must not also be a predictor, or the
+    model can simply learn the batch sequence. This pairs with
+    ``choose_validation_order_column`` and belongs beside it: the two were
+    duplicated across four UI call sites, where one copy drifting would silently
+    change what the models were fitted on.
+    """
+    return [
+        column_name
+        for column_name in process_columns
+        if column_name != validation_order_column
+    ]
 
 
 def run_all_analyses(
@@ -174,8 +211,9 @@ def run_pls(
     )
 
     best_component_count, cv_results = choose_pls_component_count(
-        features.matrix,
-        y,
+        modeling_dataframe=modeling_dataframe,
+        process_columns=process_columns,
+        y=y,
         max_components=max_components,
         cv_folds=cv_folds,
     )
@@ -221,6 +259,7 @@ def run_pls(
         "cv_results": cv_results,
         "cv_r2": get_best_cv_r2(cv_results, best_component_count),
         "q2": get_best_cv_r2(cv_results, best_component_count),
+        "q2_std_error": get_cv_std_error(cv_results, best_component_count),
         "training_r2": float(r2_score(y, predictions)),
         "time_ordered_validation": time_ordered_validation,
         "feature_coefficients": feature_coefficients,
@@ -272,12 +311,12 @@ def run_random_forest(
         n_jobs=1,
     )
 
-    group_permutation = calculate_group_permutation_importance(
-        model=model,
+    group_permutation, permutation_scoring_basis = calculate_group_permutation_importance(
         feature_matrix=features.matrix,
         y=y,
         feature_groups=features.feature_groups,
         repeats=permutation_repeats,
+        n_estimators=n_estimators,
     )
 
     feature_importances = pd.DataFrame(
@@ -308,6 +347,7 @@ def run_random_forest(
         "time_ordered_validation": time_ordered_validation,
         "feature_importances": feature_importances,
         "group_permutation_importance": group_permutation,
+        "permutation_scoring_basis": permutation_scoring_basis,
         "variable_importance": variable_importance,
     }
 
@@ -338,8 +378,7 @@ def fit_feature_preprocessor(
     numeric_columns = [
         column_name
         for column_name in process_columns
-        if pd.api.types.is_numeric_dtype(dataframe[column_name])
-        or pd.api.types.is_bool_dtype(dataframe[column_name])
+        if is_modelable_numeric_column(dataframe[column_name])
     ]
     categorical_columns = [
         column_name for column_name in process_columns if column_name not in numeric_columns
@@ -380,6 +419,12 @@ def fit_feature_preprocessor(
     if not feature_names:
         raise ValueError("No usable process features were found.")
 
+    # Numeric columns and one-hot dummies are standardized together so a
+    # categorical variable stays comparable with a numeric one. Standardizing a
+    # dummy does amplify a rare level, but leaving dummies raw caps their
+    # variance at 0.25 against 1.0 for numerics and makes categoricals nearly
+    # invisible to PCA. The cardinality bias is handled where it actually
+    # distorts the ranking - in the per-variable aggregation below.
     scaler = None
     if scale_all_features:
         unscaled_features = transform_features(
@@ -409,6 +454,27 @@ def fit_feature_preprocessor(
         feature_to_process_variable=feature_to_process_variable,
         feature_groups=feature_groups,
     )
+
+
+def is_modelable_numeric_column(series: pd.Series, min_parse_fraction: float = 0.80) -> bool:
+    """Return whether a column should be modeled as a number.
+
+    Dtype alone is not enough: a numeric column that survived intake as text
+    ("36.8") would otherwise be one-hot encoded into one category per distinct
+    value, which silently wrecks every model that uses it.
+    """
+    if pd.api.types.is_numeric_dtype(series) or pd.api.types.is_bool_dtype(series):
+        return True
+
+    if pd.api.types.is_datetime64_any_dtype(series):
+        return False
+
+    non_missing = series.dropna()
+    if non_missing.empty:
+        return False
+
+    parsed_count = int(pd.to_numeric(non_missing, errors="coerce").notna().sum())
+    return parsed_count / len(non_missing) >= min_parse_fraction
 
 
 def transform_features(
@@ -453,19 +519,6 @@ def transform_features(
     )
 
 
-def impute_numeric_columns(dataframe: pd.DataFrame, numeric_columns: list[str]) -> np.ndarray:
-    """Median-impute numeric columns, using 0 when a column is entirely missing."""
-    numeric_frame = dataframe[numeric_columns].apply(pd.to_numeric, errors="coerce").copy()
-
-    for column_name in numeric_columns:
-        median_value = numeric_frame[column_name].median()
-        if pd.isna(median_value):
-            median_value = 0.0
-        numeric_frame[column_name] = numeric_frame[column_name].fillna(median_value)
-
-    return numeric_frame.to_numpy(dtype=float)
-
-
 def impute_numeric_columns_with_medians(
     dataframe: pd.DataFrame,
     numeric_columns: list[str],
@@ -481,22 +534,6 @@ def impute_numeric_columns_with_medians(
         numeric_frame[column_name] = numeric_frame[column_name].fillna(float(fill_value))
 
     return numeric_frame.to_numpy(dtype=float)
-
-
-def impute_categorical_columns(
-    dataframe: pd.DataFrame,
-    categorical_columns: list[str],
-) -> pd.DataFrame:
-    """Mode-impute categorical columns and convert categories to strings."""
-    categorical_frame = pd.DataFrame(index=dataframe.index)
-
-    for column_name in categorical_columns:
-        series = dataframe[column_name].astype("object")
-        mode_values = series.dropna().mode()
-        fill_value = mode_values.iloc[0] if not mode_values.empty else "Missing"
-        categorical_frame[column_name] = series.fillna(fill_value).astype(str)
-
-    return categorical_frame
 
 
 def impute_categorical_columns_with_modes(
@@ -688,7 +725,9 @@ def make_time_ordered_split(
 
     train_index = list(ordered_indices[:-test_row_count])
     test_index = list(ordered_indices[-test_row_count:])
-    sorted_order_values = order_values.loc[ordered_indices]
+    # Display the original values, not the int64 sort keys, or a date boundary
+    # is reported to the user as 1704067200000000000.
+    sorted_order_values = dataframe[validation_order_column].loc[ordered_indices]
 
     return {
         "available": True,
@@ -706,7 +745,9 @@ def make_time_ordered_split(
 def convert_order_values(series: pd.Series) -> pd.Series:
     """Convert date-like or numeric order values into sortable numeric values."""
     if pd.api.types.is_datetime64_any_dtype(series):
-        return series.astype("int64")
+        # astype("int64") turns NaT into INT64_MIN, which would sort missing
+        # dates in front of every real batch and pull them into the train split.
+        return datetime_to_sortable_values(series)
 
     numeric_values = pd.to_numeric(series, errors="coerce")
     if numeric_values.notna().mean() >= 0.80:
@@ -714,11 +755,17 @@ def convert_order_values(series: pd.Series) -> pd.Series:
 
     parsed_dates = pd.to_datetime(series, errors="coerce")
     if parsed_dates.notna().mean() >= 0.80:
-        order_values = pd.Series(np.nan, index=series.index, dtype=float)
-        order_values.loc[parsed_dates.notna()] = parsed_dates.loc[parsed_dates.notna()].astype("int64")
-        return order_values
+        return datetime_to_sortable_values(parsed_dates)
 
     return pd.Series(np.nan, index=series.index)
+
+
+def datetime_to_sortable_values(series: pd.Series) -> pd.Series:
+    """Convert a datetime Series to float sort keys, keeping NaT missing."""
+    sortable_values = pd.Series(np.nan, index=series.index, dtype=float)
+    present_mask = series.notna()
+    sortable_values.loc[present_mask] = series.loc[present_mask].astype("int64")
+    return sortable_values
 
 
 def split_without_indices(split: dict[str, Any]) -> dict[str, Any]:
@@ -741,6 +788,8 @@ def order_value_for_display(value: Any) -> Any:
     """Make validation order values compact for display."""
     if pd.isna(value):
         return None
+    if isinstance(value, pd.Timestamp):
+        return value.date().isoformat()
     if isinstance(value, (np.integer, int)):
         return int(value)
     if isinstance(value, (np.floating, float)):
@@ -749,35 +798,116 @@ def order_value_for_display(value: Any) -> Any:
 
 
 def choose_pls_component_count(
-    feature_matrix: np.ndarray,
+    modeling_dataframe: pd.DataFrame,
+    process_columns: list[str],
     y: np.ndarray,
     max_components: int,
     cv_folds: int,
 ) -> tuple[int, pd.DataFrame]:
-    """Choose the PLS component count with the best cross-validated R2."""
-    maximum_allowed_components = min(max_components, feature_matrix.shape[1], feature_matrix.shape[0] - 2)
-    maximum_allowed_components = max(1, maximum_allowed_components)
+    """Choose a PLS component count by honest cross-validation.
 
-    n_splits = min(cv_folds, feature_matrix.shape[0])
+    Preprocessing is fitted inside each fold, so imputation medians and scaling
+    never see the held-out rows. Scores are averaged across folds rather than
+    pooled, and the smallest component count within one standard error of the
+    best is chosen so the reported Q2 is not simply the maximum of several
+    noisy estimates.
+    """
+    row_count = len(modeling_dataframe)
+    maximum_allowed_components = max(1, min(max_components, len(process_columns), row_count - 2))
+
+    n_splits = min(cv_folds, row_count)
     if n_splits < 3:
-        return 1, pd.DataFrame(columns=["n_components", "cv_r2"])
+        return 1, pd.DataFrame(columns=CV_RESULT_COLUMNS)
 
     splitter = KFold(n_splits=n_splits, shuffle=True, random_state=RANDOM_STATE)
+    folds = list(splitter.split(np.arange(row_count)))
     rows = []
 
     for component_count in range(1, maximum_allowed_components + 1):
-        model = PLSRegression(n_components=component_count, scale=False, max_iter=1000)
-        predicted = cross_val_predict(model, feature_matrix, y, cv=splitter).reshape(-1)
+        fold_scores = [
+            score_pls_fold(
+                modeling_dataframe=modeling_dataframe,
+                process_columns=process_columns,
+                y=y,
+                train_index=train_index,
+                test_index=test_index,
+                component_count=component_count,
+            )
+            for train_index, test_index in folds
+        ]
+        usable_scores = [score for score in fold_scores if np.isfinite(score)]
+        if not usable_scores:
+            continue
+
+        mean_score = float(np.mean(usable_scores))
+        standard_error = (
+            float(np.std(usable_scores, ddof=1) / np.sqrt(len(usable_scores)))
+            if len(usable_scores) > 1
+            else 0.0
+        )
         rows.append(
             {
                 "n_components": component_count,
-                "cv_r2": float(r2_score(y, predicted)),
+                "cv_r2": mean_score,
+                "cv_r2_std_error": standard_error,
+                "cv_fold_count": len(usable_scores),
             }
         )
 
+    if not rows:
+        return 1, pd.DataFrame(columns=CV_RESULT_COLUMNS)
+
     cv_results = pd.DataFrame(rows)
+    return select_components_within_one_standard_error(cv_results), cv_results
+
+
+def score_pls_fold(
+    modeling_dataframe: pd.DataFrame,
+    process_columns: list[str],
+    y: np.ndarray,
+    train_index: np.ndarray,
+    test_index: np.ndarray,
+    component_count: int,
+) -> float:
+    """Fit preprocessing and PLS on one training fold and score the held-out fold."""
+    train_frame = modeling_dataframe.iloc[train_index]
+    test_frame = modeling_dataframe.iloc[test_index]
+
+    try:
+        preprocessor = fit_feature_preprocessor(
+            dataframe=train_frame,
+            process_columns=process_columns,
+            scale_all_features=True,
+        )
+        train_features = transform_features(train_frame, preprocessor)
+        test_features = transform_features(test_frame, preprocessor)
+    except ValueError:
+        return np.nan
+
+    usable_components = min(
+        component_count,
+        train_features.matrix.shape[1],
+        len(train_index) - 1,
+    )
+    if usable_components < 1:
+        return np.nan
+
+    model = PLSRegression(n_components=usable_components, scale=False, max_iter=1000)
+    model.fit(train_features.matrix, y[train_index])
+    predictions = model.predict(test_features.matrix).reshape(-1)
+    return safe_r2_score(y[test_index], predictions)
+
+
+def select_components_within_one_standard_error(cv_results: pd.DataFrame) -> int:
+    """Return the simplest component count that is statistically as good as the best."""
     best_row = cv_results.sort_values(["cv_r2", "n_components"], ascending=[False, True]).iloc[0]
-    return int(best_row["n_components"]), cv_results
+    threshold = float(best_row["cv_r2"]) - float(best_row["cv_r2_std_error"])
+
+    qualifying = cv_results[cv_results["cv_r2"] >= threshold]
+    if qualifying.empty:
+        return int(best_row["n_components"])
+
+    return int(qualifying["n_components"].min())
 
 
 def calculate_vip_scores(model: PLSRegression, feature_matrix: np.ndarray) -> np.ndarray:
@@ -815,7 +945,12 @@ def aggregate_pca_loadings(
         weighted_score = 0.0
 
         for component_index, component_name in enumerate(component_names):
-            component_loading = float(np.sqrt(np.sum(loading_values[feature_indices, component_index] ** 2)))
+            # Root-MEAN-square, not root-sum-square: a categorical with L levels
+            # contributes L columns of loading mass against one column for a
+            # numeric variable, so summing ranks by cardinality, not by signal.
+            component_loading = float(
+                np.sqrt(np.mean(loading_values[feature_indices, component_index] ** 2))
+            ) if feature_indices else 0.0
             row[component_name] = component_loading
             weighted_score += component_loading * float(explained_variance_ratio[component_index])
 
@@ -838,10 +973,15 @@ def aggregate_pls_variable_importance(
         variable_features = feature_coefficients[
             feature_coefficients["process_variable"] == process_variable
         ]
+        if variable_features.empty:
+            continue
+
         rows.append(
             {
                 "process_variable": process_variable,
-                "abs_coefficient_sum": float(variable_features["abs_coefficient"].sum()),
+                # Mean, not sum: summing |coefficient| over one-hot levels gives a
+                # six-level categorical six times the mass of a numeric variable.
+                "mean_abs_coefficient": float(variable_features["abs_coefficient"].mean()),
                 "max_abs_coefficient": float(variable_features["abs_coefficient"].max()),
                 "max_vip": float(variable_features["vip"].max()),
             }
@@ -849,7 +989,7 @@ def aggregate_pls_variable_importance(
 
     variable_importance = pd.DataFrame(rows)
     variable_importance["coefficient_score"] = normalize_scores(
-        variable_importance["abs_coefficient_sum"]
+        variable_importance["max_abs_coefficient"]
     )
     variable_importance["vip_score"] = normalize_scores(variable_importance["max_vip"])
     variable_importance["pls_score"] = (
@@ -892,43 +1032,87 @@ def aggregate_random_forest_variable_importance(
     variable_importance["permutation_score"] = normalize_scores(
         variable_importance["group_permutation_importance"].clip(lower=0)
     )
-    variable_importance["rf_score"] = (
-        variable_importance["model_importance_score"] + variable_importance["permutation_score"]
-    ) / 2.0
+    # Impurity importance (MDI) is kept for reference but not scored: it is
+    # biased toward high-cardinality and continuous features regardless of
+    # signal. Held-out permutation importance carries the ranking.
+    variable_importance["rf_score"] = variable_importance["permutation_score"]
 
     return variable_importance.sort_values("rf_score", ascending=False).reset_index(drop=True)
 
 
 def calculate_group_permutation_importance(
-    model: RandomForestRegressor,
     feature_matrix: np.ndarray,
     y: np.ndarray,
     feature_groups: dict[str, list[int]],
     repeats: int,
-) -> pd.DataFrame:
-    """Permute all encoded columns for one process variable at the same time."""
+    n_estimators: int,
+) -> tuple[pd.DataFrame, str]:
+    """Permute all encoded columns of one process variable together.
+
+    Scored on held-out rows. An unconstrained forest fits its training rows
+    almost perfectly, so permuting there measures how well the forest memorized
+    a feature rather than how much that feature actually predicts.
+    """
+    row_count = feature_matrix.shape[0]
+
+    if row_count >= MINIMUM_ROWS_FOR_HELD_OUT_PERMUTATION:
+        train_index, test_index = train_test_split(
+            np.arange(row_count),
+            test_size=0.25,
+            random_state=RANDOM_STATE,
+        )
+        scoring_basis = "held-out rows"
+    else:
+        train_index = np.arange(row_count)
+        test_index = np.arange(row_count)
+        scoring_basis = "training rows (too few batches to hold data out)"
+
+    scoring_model = RandomForestRegressor(
+        n_estimators=n_estimators,
+        min_samples_leaf=2,
+        random_state=RANDOM_STATE,
+        n_jobs=-1,
+        bootstrap=True,
+    )
+    scoring_model.fit(feature_matrix[train_index], y[train_index])
+
+    scoring_matrix = feature_matrix[test_index]
+    scoring_y = y[test_index]
+    baseline_score = safe_r2_score(scoring_y, scoring_model.predict(scoring_matrix))
+
     rng = np.random.default_rng(RANDOM_STATE)
-    baseline_score = model.score(feature_matrix, y)
     rows = []
 
     for process_variable, feature_indices in feature_groups.items():
-        score_drops = []
+        if not feature_indices:
+            rows.append(
+                {
+                    "process_variable": process_variable,
+                    "group_permutation_importance": 0.0,
+                    "group_permutation_std": 0.0,
+                }
+            )
+            continue
 
+        score_drops = []
         for _ in range(repeats):
-            permuted_matrix = feature_matrix.copy()
-            shuffled_row_indices = rng.permutation(feature_matrix.shape[0])
-            permuted_matrix[:, feature_indices] = feature_matrix[shuffled_row_indices][:, feature_indices]
-            score_drops.append(baseline_score - model.score(permuted_matrix, y))
+            permuted_matrix = scoring_matrix.copy()
+            shuffled_row_indices = rng.permutation(scoring_matrix.shape[0])
+            permuted_matrix[:, feature_indices] = scoring_matrix[shuffled_row_indices][
+                :, feature_indices
+            ]
+            permuted_score = safe_r2_score(scoring_y, scoring_model.predict(permuted_matrix))
+            score_drops.append(baseline_score - permuted_score)
 
         rows.append(
             {
                 "process_variable": process_variable,
-                "group_permutation_importance": float(np.mean(score_drops)),
-                "group_permutation_std": float(np.std(score_drops)),
+                "group_permutation_importance": float(np.nanmean(score_drops)),
+                "group_permutation_std": float(np.nanstd(score_drops)),
             }
         )
 
-    return pd.DataFrame(rows)
+    return pd.DataFrame(rows), scoring_basis
 
 
 def combine_ranked_drivers(
@@ -942,12 +1126,12 @@ def combine_ranked_drivers(
     rows = []
 
     for outcome_column in outcome_columns:
-        pls_scores = pls_results[outcome_column]["variable_importance"][
-            ["process_variable", "pls_score"]
-        ]
-        rf_scores = random_forest_results[outcome_column]["variable_importance"][
-            ["process_variable", "rf_score"]
-        ]
+        pls_result = pls_results[outcome_column]
+        random_forest_result = random_forest_results[outcome_column]
+        pls_scores = pls_result["variable_importance"][["process_variable", "pls_score"]]
+        rf_scores = random_forest_result["variable_importance"][["process_variable", "rf_score"]]
+        best_validation_r2 = get_best_validation_r2(pls_result, random_forest_result)
+        rows_used = int(random_forest_result.get("n_rows_used") or 0) or None
 
         merged_scores = pca_scores.merge(pls_scores, on="process_variable", how="outer")
         merged_scores = merged_scores.merge(rf_scores, on="process_variable", how="outer")
@@ -967,7 +1151,12 @@ def combine_ranked_drivers(
                     "outcome": outcome_column,
                     "process_variable": score_row["process_variable"],
                     "combined_score": combined_score,
-                    "confidence": assign_confidence(combined_score, evidence_methods),
+                    "confidence": assign_confidence(
+                        combined_score,
+                        evidence_methods,
+                        best_validation_r2=best_validation_r2,
+                        rows_used=rows_used,
+                    ),
                     "evidence_methods": ", ".join(evidence_methods) if evidence_methods else "none",
                     "pca_score": pca_score,
                     "pls_score": pls_score,
@@ -1012,15 +1201,72 @@ def get_evidence_methods(pca_score: float, pls_score: float, rf_score: float) ->
     return evidence_methods
 
 
-def assign_confidence(combined_score: float, evidence_methods: list[str]) -> str:
-    """Assign a readable confidence label based on score and method agreement."""
+def assign_confidence(
+    combined_score: float,
+    evidence_methods: list[str],
+    best_validation_r2: float | None = None,
+    rows_used: int | None = None,
+) -> str:
+    """Assign a readable confidence label from agreement, validation, and sample size.
+
+    Method scores are normalized by their own maximum, so some variable always
+    scores 1.0 for each method - even on pure noise. Agreement alone would then
+    label a random variable "high", so a label above "exploratory" also requires
+    a model that actually predicts held-out data.
+    """
     evidence_count = len(evidence_methods)
 
     if combined_score >= 0.55 and evidence_count >= 2:
-        return "high"
-    if combined_score >= 0.30 and evidence_count >= 1:
+        label = "high"
+    elif combined_score >= 0.30 and evidence_count >= 1:
+        label = "medium"
+    else:
+        label = "exploratory"
+
+    if label == "exploratory":
+        return label
+
+    if best_validation_r2 is None or not np.isfinite(best_validation_r2):
+        return "exploratory"
+
+    if best_validation_r2 < USABLE_VALIDATION_R2:
+        return "exploratory"
+
+    if label == "high" and rows_used is not None and rows_used < SMALL_SAMPLE_ROW_COUNT:
         return "medium"
-    return "exploratory"
+
+    return label
+
+
+def get_best_validation_r2(
+    pls_result: dict[str, Any],
+    random_forest_result: dict[str, Any],
+) -> float:
+    """Return the strongest honest validation score available for an outcome.
+
+    Training R2 is deliberately excluded: it is not evidence that the model
+    generalizes.
+    """
+    candidate_scores = [
+        pls_result.get("q2"),
+        random_forest_result.get("oob_r2"),
+        get_time_ordered_test_r2(pls_result),
+        get_time_ordered_test_r2(random_forest_result),
+    ]
+    usable_scores = [
+        float(score)
+        for score in candidate_scores
+        if score is not None and np.isfinite(float(score))
+    ]
+    return max(usable_scores) if usable_scores else np.nan
+
+
+def get_time_ordered_test_r2(method_result: dict[str, Any]) -> float | None:
+    """Read the time-ordered test R2 from a method result when available."""
+    validation = method_result.get("time_ordered_validation") or {}
+    if not validation.get("available"):
+        return None
+    return validation.get("test_r2")
 
 
 def normalize_scores(values: pd.Series | np.ndarray) -> pd.Series:
@@ -1036,11 +1282,25 @@ def normalize_scores(values: pd.Series | np.ndarray) -> pd.Series:
 
 def get_best_cv_r2(cv_results: pd.DataFrame, component_count: int) -> float:
     """Return the cross-validated R2 for the selected PLS component count."""
-    if cv_results.empty:
+    return get_cv_result_value(cv_results, component_count, "cv_r2")
+
+
+def get_cv_std_error(cv_results: pd.DataFrame, component_count: int) -> float:
+    """Return the across-fold standard error for the selected component count."""
+    return get_cv_result_value(cv_results, component_count, "cv_r2_std_error")
+
+
+def get_cv_result_value(
+    cv_results: pd.DataFrame,
+    component_count: int,
+    column_name: str,
+) -> float:
+    """Read one cross-validation statistic for a component count."""
+    if cv_results.empty or column_name not in cv_results.columns:
         return np.nan
 
     matching_rows = cv_results[cv_results["n_components"] == component_count]
     if matching_rows.empty:
         return np.nan
 
-    return float(matching_rows.iloc[0]["cv_r2"])
+    return float(matching_rows.iloc[0][column_name])

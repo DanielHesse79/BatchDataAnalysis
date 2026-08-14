@@ -1,4 +1,27 @@
-# Optional advanced explainability dependencies.
+# Optional advanced explainability and experiment-design dependencies.
+# The base app runs without any of these; each feature degrades gracefully
+# (shows install instructions instead of crashing) when its package is missing.
+#
 # Install with:
 # .\.venv\Scripts\python.exe -m pip install -r requirements-optional.txt
+#
+# Pins are starting points. Verify against the installed numpy/pandas/scipy/
+# scikit-learn versions and adjust before locking.
+
+# --- Driver explainability (Job 1) ---
 catboost==1.2.10
+# XGBoost: third non-linear driver vote. Uses native pred_contribs (TreeSHAP),
+# so the heavy `shap` package is intentionally NOT required.
+xgboost==3.0.5
+
+# --- Experiment design (Job 3), all optional extras ---
+# The core DoE path uses scipy.stats.qmc (already in requirements.txt) and the
+# core Bayesian-optimization path uses the existing scikit-learn RandomForest as
+# its surrogate, so neither needs a new package. Install these ONLY if you want
+# the alternative designs/surrogates described in docs/PREDICTIVE_AND_OPTIMIZATION_PLAN.md.
+
+# Classical factorial / central-composite designs (alternative to scipy.qmc).
+pyDOE3==1.0.4
+# GP-based Expected-Improvement BO (alternative to the RF surrogate; best for
+# smooth, all-continuous parameter spaces).
+scikit-optimize==0.10.2

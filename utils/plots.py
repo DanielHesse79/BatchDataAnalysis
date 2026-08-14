@@ -294,6 +294,205 @@ def outcome_vs_spec_variable_plot(
     return figure
 
 
+def response_shape_plot(
+    dataframe: pd.DataFrame,
+    variable_col: str,
+    outcome_col: str,
+    response_band: pd.Series | dict | None = None,
+    bin_count: int = 10,
+) -> go.Figure:
+    """Plot raw outcome response plus binned means for one numeric driver."""
+    if variable_col not in dataframe.columns or outcome_col not in dataframe.columns:
+        return empty_figure("Selected variable or outcome is not available.")
+
+    plot_data = build_response_shape_frame(dataframe, variable_col, outcome_col)
+    if plot_data.empty:
+        return empty_figure(f"No numeric values available for {variable_col} and {outcome_col}.")
+
+    binned_summary = build_response_shape_summary(
+        dataframe=dataframe,
+        variable_col=variable_col,
+        outcome_col=outcome_col,
+        bin_count=bin_count,
+    )
+
+    figure = go.Figure()
+    add_response_band_overlays(figure, response_band)
+    figure.add_trace(
+        go.Scatter(
+            x=plot_data["variable_value"],
+            y=plot_data["outcome_value"],
+            mode="markers",
+            name="Batch",
+            marker=dict(color="#64748b", size=7, opacity=0.42),
+            customdata=np.stack(
+                [plot_data["batch_id"], plot_data["source_index"]],
+                axis=-1,
+            ),
+            hovertemplate=(
+                "Batch: %{customdata[0]}<br>"
+                "Row: %{customdata[1]}<br>"
+                f"{variable_col}: %{{x:.3g}}<br>"
+                f"{outcome_col}: %{{y:.3g}}<extra></extra>"
+            ),
+        )
+    )
+
+    if not binned_summary.empty:
+        figure.add_trace(
+            go.Scatter(
+                x=binned_summary["variable_midpoint"],
+                y=binned_summary["outcome_mean"],
+                mode="lines+markers",
+                name="Binned mean",
+                line=dict(color="#0f766e", width=3),
+                marker=dict(color="#0f766e", size=9),
+                customdata=np.stack(
+                    [
+                        binned_summary["count"],
+                        binned_summary["variable_min"],
+                        binned_summary["variable_max"],
+                    ],
+                    axis=-1,
+                ),
+                hovertemplate=(
+                    "Batches: %{customdata[0]}<br>"
+                    "Range: %{customdata[1]:.3g} to %{customdata[2]:.3g}<br>"
+                    "Mean outcome: %{y:.3g}<extra></extra>"
+                ),
+            )
+        )
+
+    figure.update_layout(
+        template=PLOT_TEMPLATE,
+        height=470,
+        margin=dict(l=20, r=20, t=36, b=20),
+        xaxis_title=variable_col,
+        yaxis_title=outcome_col,
+        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="left", x=0),
+    )
+    return figure
+
+
+def build_response_shape_frame(
+    dataframe: pd.DataFrame,
+    variable_col: str,
+    outcome_col: str,
+) -> pd.DataFrame:
+    """Return numeric x/y values and batch labels for response-shape plots."""
+    batch_labels = (
+        dataframe["batch_id"].astype(str)
+        if "batch_id" in dataframe.columns
+        else dataframe.index.astype(str)
+    )
+    plot_data = pd.DataFrame(
+        {
+            "source_index": dataframe.index,
+            "batch_id": batch_labels,
+            "variable_value": pd.to_numeric(dataframe[variable_col], errors="coerce"),
+            "outcome_value": pd.to_numeric(dataframe[outcome_col], errors="coerce"),
+        }
+    ).dropna(subset=["variable_value", "outcome_value"])
+    if len(plot_data) < 3 or plot_data["variable_value"].nunique() < 3:
+        return pd.DataFrame(
+            columns=["source_index", "batch_id", "variable_value", "outcome_value"]
+        )
+    return plot_data.sort_values("variable_value").reset_index(drop=True)
+
+
+def build_response_shape_summary(
+    dataframe: pd.DataFrame,
+    variable_col: str,
+    outcome_col: str,
+    bin_count: int = 10,
+) -> pd.DataFrame:
+    """Return quantile-bin response means used by response-shape plots."""
+    plot_data = build_response_shape_frame(dataframe, variable_col, outcome_col)
+    if plot_data.empty:
+        return pd.DataFrame(
+            columns=[
+                "bin_label",
+                "count",
+                "variable_min",
+                "variable_max",
+                "variable_midpoint",
+                "outcome_mean",
+                "outcome_median",
+                "outcome_std",
+            ]
+        )
+
+    usable_bin_count = min(max(int(bin_count), 3), plot_data["variable_value"].nunique())
+    plot_data = plot_data.copy()
+    plot_data["response_bin"] = pd.qcut(
+        plot_data["variable_value"],
+        q=usable_bin_count,
+        duplicates="drop",
+    )
+    summary = (
+        plot_data.groupby("response_bin", observed=True)
+        .agg(
+            count=("outcome_value", "count"),
+            variable_min=("variable_value", "min"),
+            variable_max=("variable_value", "max"),
+            outcome_mean=("outcome_value", "mean"),
+            outcome_median=("outcome_value", "median"),
+            outcome_std=("outcome_value", "std"),
+        )
+        .reset_index()
+    )
+    summary["bin_label"] = summary["response_bin"].astype(str)
+    summary["variable_midpoint"] = (summary["variable_min"] + summary["variable_max"]) / 2.0
+    return summary[
+        [
+            "bin_label",
+            "count",
+            "variable_min",
+            "variable_max",
+            "variable_midpoint",
+            "outcome_mean",
+            "outcome_median",
+            "outcome_std",
+        ]
+    ].reset_index(drop=True)
+
+
+def add_response_band_overlays(
+    figure: go.Figure,
+    response_band: pd.Series | dict | None,
+) -> None:
+    """Shade broad and refined historical response bands on a response plot."""
+    if response_band is None:
+        return
+
+    band_values = response_band.to_dict() if isinstance(response_band, pd.Series) else response_band
+    range_min = band_values.get("range_min")
+    range_max = band_values.get("range_max")
+    if pd.notna(range_min) and pd.notna(range_max):
+        figure.add_vrect(
+            x0=float(range_min),
+            x1=float(range_max),
+            fillcolor="#0f766e",
+            opacity=0.12,
+            line_width=0,
+            annotation_text="Broad historical band",
+            annotation_position="top left",
+        )
+
+    refined_min = band_values.get("refined_range_min")
+    refined_max = band_values.get("refined_range_max")
+    if pd.notna(refined_min) and pd.notna(refined_max):
+        figure.add_vrect(
+            x0=float(refined_min),
+            x1=float(refined_max),
+            fillcolor="#2563eb",
+            opacity=0.16,
+            line_width=0,
+            annotation_text="Best narrow bin",
+            annotation_position="top right",
+        )
+
+
 def add_spec_reference_lines(figure: go.Figure, spec_summary_row: pd.Series) -> None:
     """Add target/lower/upper vertical reference lines to a figure."""
     lower_limit = spec_summary_row.get("lower_limit")
@@ -550,15 +749,22 @@ def build_ordered_outcome_frame(
 def convert_sort_values(series: pd.Series) -> pd.Series:
     """Convert dates or sequence values to sortable numeric values."""
     if pd.api.types.is_datetime64_any_dtype(series):
-        return series.astype("int64")
+        # astype("int64") turns NaT into INT64_MIN, which would plot batches with
+        # missing dates first and skew the moving average and control limits.
+        return datetime_to_sort_values(series)
 
     numeric_values = pd.to_numeric(series, errors="coerce")
     if numeric_values.notna().mean() >= 0.80:
         return numeric_values
 
-    parsed_dates = pd.to_datetime(series, errors="coerce")
+    return datetime_to_sort_values(pd.to_datetime(series, errors="coerce"))
+
+
+def datetime_to_sort_values(series: pd.Series) -> pd.Series:
+    """Convert a datetime Series to float sort keys, keeping NaT missing."""
     sort_values = pd.Series(np.nan, index=series.index, dtype=float)
-    sort_values.loc[parsed_dates.notna()] = parsed_dates.loc[parsed_dates.notna()].astype("int64")
+    present_mask = series.notna()
+    sort_values.loc[present_mask] = series.loc[present_mask].astype("int64")
     return sort_values
 
 

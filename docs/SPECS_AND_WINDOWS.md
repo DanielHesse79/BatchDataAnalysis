@@ -93,7 +93,10 @@ For each matched spec variable, the app calculates:
 - Historical used range divided by allowed range.
 - Median margin to nearest limit.
 - Worst margin to nearest limit.
-- Cp and Cpk for two-sided limits when enough data exists.
+- Pp and Ppk for two-sided limits when enough data exists. One-sided specs get a
+  one-sided Ppk (PpU for an upper limit, PpL for a lower limit) with Pp left
+  empty, because Pp has no meaning without both limits. The `capability_basis`
+  column names which index was produced.
 - Out-of-spec batch details.
 - Outcome means by spec zone for process variables.
 
@@ -242,7 +245,7 @@ Useful combinations:
 
 - The challenge rules are intentionally simple.
 - No formal tolerance interval or Bayesian capability model is used.
-- Cp/Cpk assumes stable, roughly normal behavior.
+- Pp/Ppk assumes stable, roughly normal behavior.
 - Categorical specs are treated as reference rows for now.
 - Operational cost of tight specs is not captured unless the user supplies it
   separately.

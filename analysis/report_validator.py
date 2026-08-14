@@ -40,6 +40,18 @@ ASSUMED_SPEC_PHRASES = [
     "qc specs (assumed",
 ]
 
+# Phrases that usually mean a local model leaked its scratchpad. The streaming
+# layer used to truncate the report at these, which silently deleted legitimate
+# text; they are reported here so the user can judge instead.
+SUSPECT_REASONING_PHRASES = [
+    "thinking process:",
+    "analyze the request:",
+    "self-correction",
+    "drafting the response:",
+    "internal reasoning:",
+    "chain of thought:",
+]
+
 
 @dataclass(frozen=True)
 class ReportValidationResult:
@@ -59,6 +71,7 @@ def validate_interpretation_text(
 
     warnings.extend(check_required_headings(report_text))
     warnings.extend(check_assumed_specs(normalized_text))
+    warnings.extend(check_leaked_reasoning(normalized_text))
     warnings.extend(check_causal_or_spec_change_claims(normalized_text))
     warnings.extend(check_unknown_variables(report_text, report_pack))
     warnings.extend(check_mislabeled_categorical_levels(report_text, report_pack))
@@ -73,6 +86,16 @@ def check_required_headings(report_text: str) -> list[str]:
         f"Missing expected section heading: {heading}"
         for heading in REQUIRED_HEADINGS
         if heading not in report_text
+    ]
+
+
+def check_leaked_reasoning(normalized_text: str) -> list[str]:
+    """Warn when the report looks like it contains scratchpad text."""
+    return [
+        f"The report contains '{phrase}', which often means the model leaked its "
+        "reasoning. Check that section before sharing the report."
+        for phrase in SUSPECT_REASONING_PHRASES
+        if phrase in normalized_text
     ]
 
 
@@ -131,13 +154,22 @@ def check_mislabeled_categorical_levels(report_text: str, report_pack: dict[str,
         for level in levels:
             level_to_variables.setdefault(str(level), set()).add(variable)
 
+    # Match the levels this pack actually contains rather than a fixed shape such
+    # as ABC-123; real level names include Supplier_B, RM_005, and bare numbers.
+    # Backticks around either side are optional because models format both ways.
+    known_levels = sorted(level_to_variables, key=len, reverse=True)
+    if not known_levels:
+        return []
+
     warnings = []
     labeled_mentions = re.findall(
-        r"([A-Za-z_][A-Za-z0-9_]*)\s*=\s*([A-Za-z]+-[A-Za-z0-9]+)",
+        r"`?([A-Za-z_][A-Za-z0-9_]*)`?\s*=\s*`?("
+        + "|".join(re.escape(level) for level in known_levels)
+        + r")`?",
         report_text,
     )
     for variable, level in labeled_mentions:
-        if level in level_to_variables and variable not in level_to_variables[level]:
+        if variable not in level_to_variables[level]:
             warnings.append(
                 f"Possible categorical mix-up: {variable}={level}, but {level} belongs to {', '.join(sorted(level_to_variables[level]))}."
             )
@@ -169,9 +201,11 @@ def check_spec_limit_mentions(report_text: str, report_pack: dict[str, Any]) -> 
         "lower spec",
         "within spec",
         "out of spec",
-        "oos",
     ]
-    if any(term in normalized_text for term in risky_spec_terms):
+    # "oos" needs word boundaries; as a bare substring it matches loose, choose, moose.
+    if any(term in normalized_text for term in risky_spec_terms) or re.search(
+        r"\boos\b", normalized_text
+    ):
         return ["The report discusses specs even though no spec/window file was supplied."]
     return []
 

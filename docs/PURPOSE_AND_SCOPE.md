@@ -116,8 +116,9 @@ Version 1 is local-first:
 - Local Ollama models keep interpretation on the machine.
 
 Cloud-tagged Ollama models, such as `nemotron-3-super:cloud`, may send the
-analysis summary to Ollama Cloud. The UI warns the user when such a model is
-selected.
+analysis summary to Ollama Cloud. They are excluded from the model list until
+the user ticks `Allow Ollama Cloud models`, are never preselected, and the UI
+warns again once such a model is chosen.
 
 ## Success Criteria
 

@@ -8,9 +8,12 @@ from typing import Any
 import numpy as np
 import pandas as pd
 
+from analysis.normalization import build_missing_like_mask
+
 
 HIGH_MISSING_PERCENT_THRESHOLD = 20.0
 NEAR_CONSTANT_TOP_VALUE_PERCENT_THRESHOLD = 95.0
+VARIABLE_TYPES = ["continuous", "categorical", "binary", "empty"]
 
 
 @dataclass(frozen=True)
@@ -54,7 +57,7 @@ def profile_merged_data(
     variable_types = classify_process_variables(merged_dataframe, process_columns)
     variable_type_counts = {
         variable_type: int((variable_types["type"] == variable_type).sum())
-        for variable_type in ["continuous", "categorical", "binary"]
+        for variable_type in VARIABLE_TYPES
     }
 
     missingness = calculate_missingness(merged_dataframe)
@@ -78,6 +81,24 @@ def profile_merged_data(
         outcome_statistics=outcome_statistics,
         warnings=warnings,
     )
+
+
+def get_categorical_color_options(
+    profile_result,
+    merged_dataframe: pd.DataFrame,
+    max_levels: int = 20,
+) -> list[str]:
+    """Return categorical columns with few enough levels to color a plot by."""
+    candidate_columns = profile_result.variable_types[
+        profile_result.variable_types["type"].isin(["categorical", "binary"])
+    ]["column"].tolist()
+
+    return [
+        column_name
+        for column_name in candidate_columns
+        if column_name in merged_dataframe.columns
+        and int(merged_dataframe[column_name].nunique(dropna=True)) <= max_levels
+    ]
 
 
 def classify_process_variables(
@@ -106,9 +127,17 @@ def classify_process_variables(
 
 
 def classify_series(series: pd.Series) -> str:
-    """Return the variable type that the analysis pipeline should assume."""
+    """Return the variable type that the analysis pipeline should assume.
+
+    A column with no values at all is reported as "empty" rather than "binary".
+    An all-missing sensor column has zero distinct values, so a `<= 2` check
+    would classify it as binary and send it into categorical checks.
+    """
     non_missing_series = series.dropna()
     unique_count = int(non_missing_series.nunique())
+
+    if unique_count == 0:
+        return "empty"
 
     if unique_count <= 2:
         return "binary"
@@ -124,8 +153,9 @@ def calculate_missingness(dataframe: pd.DataFrame) -> pd.DataFrame:
     row_count = max(len(dataframe), 1)
     rows = []
 
-    for column_name in dataframe.columns:
-        missing_count = int(dataframe[column_name].isna().sum())
+    for _, series in dataframe.items():
+        column_name = series.name
+        missing_count = int(build_missing_like_mask(series).sum())
         missing_percent = missing_count / row_count * 100.0
         rows.append(
             {

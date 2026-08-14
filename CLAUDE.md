@@ -18,6 +18,9 @@ python -m venv .venv
 .\.venv\Scripts\activate
 pip install -r requirements.txt
 
+# Test tooling (pytest lives here, not in requirements.txt)
+pip install -r requirements-dev.txt
+
 # Generate the three synthetic datasets used in tests and smoke tests
 python generate_synthetic_data.py
 python generate_mock_spec_data.py
@@ -30,18 +33,21 @@ python generate_messy_field_data.py
 .\.venv\Scripts\python.exe -m pytest -q
 .\.venv\Scripts\python.exe -m pytest tests/test_evidence.py::test_specific_thing -q
 
-# Optional CatBoost explainability
+# Optional explainability + experiment-design extras (CatBoost, XGBoost, DoE/BO)
 .\.venv\Scripts\python.exe -m pip install -r requirements-optional.txt
 
+# Optional, HEAVY: time-series forecasting (torch + Chronos-2). See plan doc.
+.\.venv\Scripts\python.exe -m pip install -r requirements-forecast.txt
+
 # Compile check before commits
-.\.venv\Scripts\python.exe -m compileall -q app.py generate_synthetic_data.py analysis utils
+.\.venv\Scripts\python.exe -m compileall -q app.py generate_synthetic_data.py analysis utils ui
 ```
 
 Python 3.11+ is expected. Pinned dependencies are in `requirements.txt`.
 
 ## Architecture
 
-`app.py` is the Streamlit entry point and is large (~93 KB). It owns UI flow, session state, and rendering, but delegates all real logic to the `analysis/` and `utils/` modules. **Do not put new analysis logic in `app.py`** — add it to the appropriate `analysis/*` module and call it from `app.py`. Analysis functions return dictionaries and DataFrames so Streamlit code stays a thin shell.
+`app.py` is the Streamlit entry point and is deliberately small (~440 lines). It owns page setup, session state, and the stage-by-stage flow, and nothing else. Rendering lives in `ui/`; all real logic lives in `analysis/` and `utils/`. **Do not put analysis logic in `app.py` or in `ui/`** — add it to the appropriate `analysis/*` module and call it. Analysis functions return dictionaries and DataFrames so the view layer stays a thin shell. `tests/test_app_smoke.py` fails the build if `app.py` grows past 600 lines.
 
 The pipeline is staged: intake → normalization → aggregation → readiness/mapping → data_prep → profiling/audit → methods → evidence → key_findings/confidence → interpreter (LLM) → report_validator → utils/report (PDF). Each stage is a separate module so the LLM step gets a small, verified evidence pack rather than raw tables.
 
@@ -55,9 +61,10 @@ The pipeline is staged: intake → normalization → aggregation → readiness/m
 - **data_prep.py** — validates batch ID columns, picks default outcomes, performs the inner join.
 - **profiling.py** — variable types, missingness, near-constant columns, outcome stats.
 - **audit.py** — pre-flight checks: leakage, drift, confounding, missingness, outliers, multicollinearity.
-- **methods.py** — PCA, PLS, Random Forest, preprocessing, validation, combined ranked driver table.
+- **methods.py** — PCA, PLS, Random Forest, preprocessing, validation, combined ranked driver table. Cross-validation fits preprocessing inside each fold; confidence labels are gated on held-out performance, so a driver cannot be called "high" confidence unless some model actually predicts unseen batches.
+- **templates.py** — canonical import templates (process/QC wide/QC long/spec sheets) offered as downloads.
 - **advanced_methods.py** — optional CatBoost + native SHAP explanations. This is on-demand and should not make the base app depend on CatBoost.
-- **specs.py** — spec/window normalization, historical margins, OOS batches, Cp/Cpk, conservative challenge labels.
+- **specs.py** — spec/window normalization, historical margins, OOS batches, Pp/Ppk capability (overall sigma, including one-sided PpU/PpL), conservative challenge labels.
 - **evidence.py** — builds the deterministic report pack consumed by the LLM (and by key_findings). Also computes historical response bands (quartile means + best-observed bin) so middle-band sweet spots aren't flattened to "higher is better".
 - **key_findings.py** — Python-generated source-of-truth findings shown **before** the LLM narrative.
 - **confidence.py** — explains the practical confidence label per ranked driver (method agreement, validation, n, missingness, audit cautions).
@@ -65,10 +72,20 @@ The pipeline is staged: intake → normalization → aggregation → readiness/m
 - **interpreter.py** — streams an Ollama interpretation from the evidence pack. Handles cloud-model shortcuts and output cleanup.
 - **report_validator.py** — heuristic checks on LLM output: assumed specs, unknown variables, categorical level mix-ups, overly causal/action-directive wording.
 
+### `ui/` modules (view layer only — no analysis logic)
+
+- **state.py** — Streamlit caching, input fingerprints, and per-run memos. Streamlit reruns the whole script on every interaction, so file parsing, the evidence pack, and the Ollama model list are all cached here rather than recomputed.
+- **theme.py** — page styling, header, sidebar, in-app documentation reader.
+- **intake_panel.py** — templates, file intake, long-format pivot, readiness, mapping profiles, spec input.
+- **diagnostics_panel.py** — merge summary, profile, pre-flight audit, QC trends, spec assessment.
+- **results_panel.py** — ranked drivers, per-method views, optional CatBoost/XGBoost tabs, outcome-direction override.
+- **explanation_panel.py** — PDF export and the local Ollama narrative.
+
 ### `utils/`
 
 - **plots.py** — Plotly helpers (PCA, loadings, importance, QC trends, control charts, spec plots).
 - **report.py** — ReportLab PDF export.
+- **format.py** — shared display formatting (percentages, metrics, rounding, filename timestamps).
 
 ### Key design rules (from docs/DEVELOPMENT.md)
 
@@ -90,7 +107,7 @@ Cloud model shortcuts (e.g. `nemotron-3-super:cloud`) route data through Ollama 
 
 ## Tests
 
-`tests/` covers data prep, normalization, aggregation, profiling, audit, specs/windows, deterministic evidence, confidence breakdowns, report validation, synthetic-truth recovery, and optional CatBoost integration when `catboost` is installed. It does not yet click through the Streamlit UI or verify PDF/chart visual fidelity. Treat the manual smoke tests in `docs/DEVELOPMENT.md` (synthetic, mock-spec, and messy-field flows) as the UI-level check.
+`tests/` covers data prep, normalization, aggregation, profiling, audit, specs/windows, deterministic evidence, confidence breakdowns, report validation, synthetic-truth recovery, statistical hardening (including a pure-noise negative control), PDF generation, interpreter prompt budgeting, and optional CatBoost/XGBoost integration when installed. `tests/test_app_smoke.py` runs `app.py` headlessly with Streamlit's `AppTest` to catch import errors, a missing entry point, and an over-large `app.py`. It still does not drive file uploads through the UI or verify chart visual fidelity — treat the manual smoke tests in `docs/DEVELOPMENT.md` (synthetic, mock-spec, and messy-field flows) as the remaining UI-level check.
 
 ## Synthetic test data
 
@@ -101,5 +118,7 @@ Generated by the three `generate_*.py` scripts and committed under `data/`. The 
 In-depth docs live in `docs/` and are also surfaced through an in-UI reader at the top of the main page:
 
 - `PURPOSE_AND_SCOPE.md`, `THEORY.md`, `USER_GUIDE.md`, `FIELD_DATA_INTAKE.md`, `SPECS_AND_WINDOWS.md`, `VALIDATION.md`, `DEVELOPMENT.md`.
+
+Planned work (XGBoost+SHAP, Chronos-2 forecasting, DoE/Bayesian-optimization experiment proposals) and its dependency tiers are specced in `docs/PREDICTIVE_AND_OPTIMIZATION_PLAN.md`. Key rule from that plan: optimization/DoE outputs are **candidate experiments, never setpoints**, and all three additions stay optional (gated like `advanced_methods.py`) so the base app needs no extra packages.
 
 When adding a new analysis method, also add an entry to `analysis/method_registry.py` and a short note in `docs/THEORY.md`.

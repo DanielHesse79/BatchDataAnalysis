@@ -118,6 +118,43 @@ The app compares each supplied spec/window with historical data:
 - Whether the variable is also a model-ranked quality driver.
 - Whether outcomes look different near the window edges.
 
+### Capability: Pp And Ppk, Not Cp And Cpk
+
+The app reports `pp` and `ppk`, not `cp` and `cpk`. The distinction is the
+standard deviation used:
+
+- Cp and Cpk use within-subgroup sigma, estimated from rational subgroups
+  collected under short-term, common-cause-only conditions.
+- Pp and Ppk use the overall (long-term) sample sigma of all the supplied
+  values.
+
+Batch records uploaded here almost never carry rational subgroups, so the only
+honest spread estimate is the overall sample standard deviation, and the
+matching index names are Pp and Ppk. Reporting those numbers as Cp/Cpk would
+overstate what the data supports: overall sigma includes between-batch drift and
+special-cause variation, so Pp/Ppk are usually lower than the Cp/Cpk a
+subgrouped study would produce.
+
+One-sided specs get an index too, because the app's own default spec template is
+mostly one-sided (purity lower-only, HCP and aggregate upper-only):
+
+```text
+two-sided:   pp  = (USL - LSL) / (6 * sigma)
+             ppk = min((USL - mean), (mean - LSL)) / (3 * sigma)
+upper-only:  ppk = (USL - mean) / (3 * sigma)   (PpU; pp is not defined)
+lower-only:  ppk = (mean - LSL) / (3 * sigma)   (PpL; pp is not defined)
+```
+
+A one-sided spec has no two-sided tolerance width, so `pp` stays empty and only
+`ppk` is reported. The `capability_basis` column names which of these three
+cases produced the number. Capability is withheld entirely when fewer than ten
+usable values are available or when sigma is zero, since neither case supports a
+meaningful index.
+
+Like every other number in this section, these indices assume stable, roughly
+normal behavior and describe history only. They are not a capability
+qualification.
+
 The output should be read as a historical operating-window assessment, not a
 validated design space. A spec can be challenged by the data, but changing it
 requires domain review and usually confirmatory evidence.
@@ -265,6 +302,18 @@ The app reports two levels when enough data is available:
 - Refined narrow bin: more exact, but more sensitive to random noise and uneven
   historical coverage.
 
+The Top Drivers tab also includes a response-shape plot for top numeric drivers.
+It shows:
+
+- individual batch points,
+- quantile-binned outcome means,
+- the broad historical response band, when available,
+- the refined best observed bin, when available.
+
+This plot is meant to help a process scientist see whether the pattern looks
+linear, flat, U-shaped, edge-sensitive, or noisy. It still describes historical
+data only. It does not create an optimized setpoint.
+
 ## Categorical Level Effects
 
 For categorical drivers, the app summarizes outcome means by level. This can
@@ -338,6 +387,17 @@ Important caveats:
 - It does not currently change the main ranked-driver score.
 - It should be compared against PLS and Random Forest rather than used alone.
 - Time-ordered validation is more important than training fit.
+
+XGBoost + SHAP is a second optional comparison layer, available when the
+`xgboost` Python package is installed. It is a gradient-boosted tree model and
+acts as a third non-linear vote next to Random Forest and CatBoost. Because
+XGBoost has no native categorical handling, the app one-hot encodes categoricals
+with the same preprocessing as PLS and Random Forest, then collapses the encoded
+SHAP contributions back to the original process variables. SHAP comes from
+XGBoost's own TreeSHAP (`pred_contribs`), so no extra `shap` package is needed.
+The same caveats as CatBoost apply: it explains model behavior on historical
+data, not causation, and it does not currently change the main ranked-driver
+score.
 
 OPLS is still planned. It would add a chemometrics root-cause view that separates
 outcome-related variation from structured variation unrelated to the outcome.

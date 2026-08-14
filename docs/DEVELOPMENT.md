@@ -128,7 +128,7 @@ analysis/specs.py
 ```
 
 Normalizes spec/window files and calculates historical margins,
-out-of-spec batches, spec-zone outcome summaries, Cp/Cpk, and conservative
+out-of-spec batches, spec-zone outcome summaries, Pp/Ppk, and conservative
 challenge labels.
 
 ```text
@@ -150,8 +150,8 @@ action-directive wording.
 utils/plots.py
 ```
 
-Plotly chart helpers for PCA, loadings, importance, outcome distributions, QC
-trends, control charts, and spec/window plots.
+Plotly chart helpers for PCA, loadings, importance, outcome distributions,
+response-shape plots, QC trends, control charts, and spec/window plots.
 
 ```text
 utils/report.py
@@ -238,6 +238,8 @@ Current automated coverage includes:
   unmatched spec rows, and duplicate spec-row rejection.
 - Deterministic evidence: response bands, confidence breakdowns, key findings,
   guardrails, and report validation.
+- Response-shape plots: quantile-bin summaries, raw points, and response-band
+  overlays.
 - Synthetic recovery: the planted yield, purity, aggregate, HCP interaction,
   BR-3, and Supplier_B stories.
 - Optional CatBoost integration when `catboost` is installed; the test is

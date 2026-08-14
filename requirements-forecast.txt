@@ -1,0 +1,26 @@
+# Optional time-series forecasting dependencies (Job 2: Chronos-2 drift/forecast).
+#
+# THIS IS THE ONLY HEAVY OPTIONAL TIER. Keep it isolated from the base app.
+# The forecast panel ships an EWMA / rolling-trend fallback (numpy/pandas only),
+# so Chronos-2 is a pure upgrade — the feature works without anything here.
+#
+# Install with:
+# .\.venv\Scripts\python.exe -m pip install -r requirements-forecast.txt
+#
+# CAVEATS — read before installing:
+#   1. torch is large (hundreds of MB). Pick the CPU or CUDA wheel deliberately;
+#      the line below is the default (often CPU). For CUDA, install torch from
+#      the appropriate index URL first, then install the rest of this file.
+#   2. Chronos model weights download from the HuggingFace Hub on first use.
+#      That is network egress and conflicts with the offline / sensitive-data
+#      posture. Pre-download and pin the model, or skip Chronos and use the
+#      built-in EWMA fallback for sensitive data.
+#   3. Confirm which package distributes "Chronos-2" at implementation time
+#      (chronos-forecasting vs autogluon-timeseries) and pin accordingly.
+#
+# Pins are starting points. Verify against installed numpy/pandas and adjust.
+
+torch==2.7.1
+chronos-forecasting==1.5.2
+# transformers / accelerate are pulled in transitively by chronos-forecasting;
+# pin them here if you need reproducible builds.

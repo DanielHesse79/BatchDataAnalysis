@@ -7,6 +7,7 @@ model can narrate without rediscovering patterns from large raw tables.
 
 from __future__ import annotations
 
+import re
 from typing import Any
 
 import pandas as pd
@@ -23,6 +24,12 @@ REFINED_MIN_ROWS = 40
 REFINED_MIN_BIN_COUNT = 4
 REFINED_MAX_BIN_COUNT = 10
 REFINED_TARGET_ROWS_PER_BIN = 15
+# The winning refined bin is the best of several noisy bin means, so its lift is
+# optimistically biased by construction. Evenly filled quantile bins hold at
+# least ten rows under the bin-count policy above, so this floor only removes
+# bins left thin by pd.qcut edge collapse on duplicated values.
+REFINED_MIN_WINNING_BIN_COUNT = 8
+VALID_OUTCOME_OBJECTIVES = {"maximize", "minimize", "unknown"}
 
 LOWER_IS_BETTER_OUTCOME_KEYWORDS = [
     "loss",
@@ -67,6 +74,8 @@ OPERATING_WINDOW_HINT_COLUMNS = [
     "refined_count",
     "refined_bin_count",
     "refined_directional_lift_vs_other_bins",
+    "refined_directional_lift_standard_error",
+    "refined_directional_lift_z_score",
     "refined_pattern_type",
     "pattern_type",
     "evidence_note",
@@ -81,8 +90,13 @@ def build_report_pack(
     merged_dataframe: pd.DataFrame,
     outcomes: list[str],
     spec_assessment=None,
+    outcome_objectives: dict[str, str] | None = None,
 ) -> dict[str, Any]:
-    """Create a compact, JSON-ready report pack for LLM interpretation."""
+    """Create a compact, JSON-ready report pack for LLM interpretation.
+
+    ``outcome_objectives`` optionally overrides the keyword-based maximize /
+    minimize guess per outcome, for cases the name cannot settle.
+    """
     ranked_drivers = analysis_results["ranked_drivers"]
 
     return {
@@ -114,6 +128,7 @@ def build_report_pack(
                 analysis_results=analysis_results,
                 merged_dataframe=merged_dataframe,
                 profile_result=profile_result,
+                outcome_objectives=outcome_objectives,
             )
             for outcome in outcomes
         },
@@ -275,6 +290,7 @@ def build_outcome_dossier(
     analysis_results: dict[str, Any],
     merged_dataframe: pd.DataFrame,
     profile_result,
+    outcome_objectives: dict[str, str] | None = None,
 ) -> dict[str, Any]:
     """Build one deterministic dossier per outcome."""
     outcome_drivers = ranked_drivers[ranked_drivers["outcome"] == outcome].head(TOP_DRIVER_COUNT)
@@ -284,6 +300,7 @@ def build_outcome_dossier(
         profile_result=profile_result,
         outcome=outcome,
         candidate_variables=top_driver_names,
+        outcome_objectives=outcome_objectives,
     )
 
     return {
@@ -363,26 +380,33 @@ def build_categorical_level_effects(
     """Return best/worst category levels for candidate categorical drivers."""
     categorical_variables = get_variables_by_type(profile_result, {"categorical", "binary"})
     outcome_values = pd.to_numeric(merged_dataframe[outcome], errors="coerce")
-    overall_mean = outcome_values.mean()
+    all_rows_outcome_mean = outcome_values.mean()
     results = []
 
     for variable in candidate_variables:
         if variable not in categorical_variables or variable not in merged_dataframe.columns:
             continue
 
+        # The level means below exclude rows where the variable itself is
+        # missing, so the baseline has to exclude them too. Comparing against an
+        # all-rows mean makes the deltas fail to decompose whenever a variable
+        # has informative missingness.
+        comparable_data = merged_dataframe.assign(_outcome=outcome_values).dropna(
+            subset=[variable, "_outcome"]
+        )
+        if comparable_data.empty:
+            continue
+
+        comparable_outcome_mean = float(comparable_data["_outcome"].mean())
         grouped = (
-            merged_dataframe.assign(_outcome=outcome_values)
-            .dropna(subset=[variable, "_outcome"])
-            .groupby(variable)["_outcome"]
-            .agg(["count", "mean"])
-            .reset_index()
+            comparable_data.groupby(variable)["_outcome"].agg(["count", "mean"]).reset_index()
         )
         if grouped.empty:
             continue
 
         grouped["level"] = grouped[variable].astype(str)
         grouped["level_label"] = variable + "=" + grouped["level"]
-        grouped["delta_from_overall_mean"] = grouped["mean"] - overall_mean
+        grouped["delta_from_overall_mean"] = grouped["mean"] - comparable_outcome_mean
         grouped = grouped.sort_values(
             "delta_from_overall_mean",
             key=lambda values: values.abs(),
@@ -393,7 +417,16 @@ def build_categorical_level_effects(
         results.append(
             {
                 "variable": variable,
-                "overall_outcome_mean": round_or_none(overall_mean),
+                "overall_outcome_mean": round_or_none(comparable_outcome_mean),
+                "overall_outcome_mean_all_rows": round_or_none(all_rows_outcome_mean),
+                "rows_used": int(len(comparable_data)),
+                "rows_excluded_missing_variable_or_outcome": int(
+                    len(merged_dataframe) - len(comparable_data)
+                ),
+                "baseline_note": (
+                    "delta_from_overall_mean is measured against overall_outcome_mean, "
+                    "which uses only rows where this variable and the outcome are both present."
+                ),
                 "largest_level_effects": dataframe_to_records(
                     grouped[
                         ["level_label", "count", "mean", "delta_from_overall_mean"]
@@ -411,6 +444,7 @@ def build_numeric_driver_patterns(
     profile_result,
     outcome: str,
     candidate_variables: list[str],
+    outcome_objectives: dict[str, str] | None = None,
 ) -> list[dict[str, Any]]:
     """Return quartile summaries and correlations for numeric drivers."""
     numeric_variables = get_variables_by_type(profile_result, {"continuous"})
@@ -461,11 +495,56 @@ def build_numeric_driver_patterns(
                     outcome=outcome,
                     quartile_summary=quartile_summary,
                     usable_data=usable_data,
+                    outcome_objectives=outcome_objectives,
                 ),
             }
         )
 
     return results
+
+
+def get_numeric_driver_candidates(
+    outcome_drivers: pd.DataFrame,
+    profile_result,
+    merged_dataframe: pd.DataFrame,
+    minimum_distinct_values: int = 3,
+) -> list[str]:
+    """Return ranked numeric drivers that can support a response-shape plot.
+
+    A variable needs enough distinct values for a shape to mean anything; two
+    distinct values describe a group difference, not a response curve.
+    """
+    continuous_columns = set(
+        profile_result.variable_types[
+            profile_result.variable_types["type"] == "continuous"
+        ]["column"].tolist()
+    )
+
+    return [
+        variable_name
+        for variable_name in outcome_drivers["process_variable"].tolist()
+        if variable_name in continuous_columns
+        and variable_name in merged_dataframe.columns
+        and pd.to_numeric(merged_dataframe[variable_name], errors="coerce").nunique()
+        >= minimum_distinct_values
+    ]
+
+
+def get_response_band_for_variable(
+    operating_window_hints: pd.DataFrame,
+    variable_name: str,
+) -> dict[str, Any] | None:
+    """Return one response-band row as a dict, if one was produced."""
+    if operating_window_hints is None or operating_window_hints.empty:
+        return None
+
+    matching_rows = operating_window_hints[
+        operating_window_hints["process_variable"] == variable_name
+    ]
+    if matching_rows.empty:
+        return None
+
+    return matching_rows.iloc[0].to_dict()
 
 
 def build_operating_window_hints(
@@ -474,6 +553,7 @@ def build_operating_window_hints(
     profile_result,
     outcomes: list[str] | None = None,
     max_variables_per_outcome: int = TOP_NUMERIC_PATTERN_COUNT,
+    outcome_objectives: dict[str, str] | None = None,
 ) -> pd.DataFrame:
     """Return suggested historical response bands for top numeric drivers.
 
@@ -498,6 +578,7 @@ def build_operating_window_hints(
             profile_result=profile_result,
             outcome=outcome,
             candidate_variables=candidate_variables,
+            outcome_objectives=outcome_objectives,
         )
         for pattern in numeric_patterns:
             response_band = pattern.get("historical_response_band")
@@ -527,9 +608,10 @@ def summarize_historical_response_band(
     outcome: str,
     quartile_summary: pd.DataFrame,
     usable_data: pd.DataFrame,
+    outcome_objectives: dict[str, str] | None = None,
 ) -> dict[str, Any] | None:
     """Identify the best contiguous quartile band for an inferred objective."""
-    objective = infer_outcome_objective(outcome)
+    objective = infer_outcome_objective(outcome, outcome_objectives=outcome_objectives)
     if objective == "unknown" or quartile_summary.empty or len(quartile_summary) < 3:
         return None
 
@@ -633,6 +715,12 @@ def summarize_refined_response_window(
     The refined bin is intentionally separate from the broader quartile band. It
     is more precise, but more sensitive to random noise and uneven historical
     coverage.
+
+    The winning bin is picked by argmax over several noisy bin means, so its
+    reported lift is a max-of-noisy-means and is optimistically biased. Two
+    guards keep that honest: the winning bin must hold at least
+    ``REFINED_MIN_WINNING_BIN_COUNT`` batches, and the lift is reported together
+    with a normal-approximation standard error and z score.
     """
     bounded_data = usable_data[
         (usable_data["variable_value"] >= lower_bound)
@@ -660,7 +748,7 @@ def summarize_refined_response_window(
             variable_max=("variable_value", "max"),
             outcome_mean=("outcome_value", "mean"),
         )
-        .reset_index(drop=True)
+        .reset_index()
     )
     if len(refined_summary) < REFINED_MIN_BIN_COUNT:
         return None
@@ -674,21 +762,32 @@ def summarize_refined_response_window(
         best_position = int(mean_values.argmin())
 
     best_row = refined_summary.iloc[best_position]
+    if int(best_row["count"]) < REFINED_MIN_WINNING_BIN_COUNT:
+        return None
+
     other_summary = refined_summary.drop(refined_summary.index[best_position])
     refined_mean = float(best_row["outcome_mean"])
     other_mean = weighted_mean(other_summary["outcome_mean"], other_summary["count"])
     if other_mean is None:
         return None
 
+    best_bin_mask = refined_data["refined_bin"] == best_row["refined_bin"]
+    standard_error = difference_standard_error(
+        refined_data.loc[best_bin_mask, "outcome_value"],
+        refined_data.loc[~best_bin_mask, "outcome_value"],
+    )
+
     if objective == "maximize":
         directional_lift = refined_mean - other_mean
         evidence_note = (
-            "Narrower best observed quantile bin. This is more precise but more noise-sensitive than the broad band."
+            "Narrower best observed quantile bin, chosen as the highest of several noisy bin means, "
+            "so the lift is optimistically biased. Compare it with its standard error before treating it as real."
         )
     else:
         directional_lift = other_mean - refined_mean
         evidence_note = (
-            "Narrower lowest observed quantile bin. This is more precise but more noise-sensitive than the broad band."
+            "Narrower lowest observed quantile bin, chosen as the lowest of several noisy bin means, "
+            "so the lift is optimistically biased. Compare it with its standard error before treating it as real."
         )
 
     if directional_lift <= 0:
@@ -704,12 +803,38 @@ def summarize_refined_response_window(
         "refined_count": int(best_row["count"]),
         "refined_bin_count": int(len(refined_summary)),
         "refined_directional_lift_vs_other_bins": round_or_none(directional_lift),
+        "refined_directional_lift_standard_error": round_or_none(standard_error),
+        "refined_directional_lift_z_score": round_or_none(
+            directional_lift / standard_error
+            if standard_error is not None and standard_error > 0
+            else None
+        ),
         "refined_pattern_type": classify_refined_bin_position(
             best_position=best_position,
             bin_count=len(refined_summary),
         ),
         "refined_evidence_note": evidence_note,
     }
+
+
+def difference_standard_error(
+    first_values: pd.Series,
+    second_values: pd.Series,
+) -> float | None:
+    """Return the normal-approximation standard error of a difference of means."""
+    first_numeric = pd.to_numeric(first_values, errors="coerce").dropna()
+    second_numeric = pd.to_numeric(second_values, errors="coerce").dropna()
+    first_count = int(first_numeric.shape[0])
+    second_count = int(second_numeric.shape[0])
+    if first_count < 2 or second_count < 2:
+        return None
+
+    first_variance = float(first_numeric.var(ddof=1))
+    second_variance = float(second_numeric.var(ddof=1))
+    if pd.isna(first_variance) or pd.isna(second_variance):
+        return None
+
+    return float((first_variance / first_count + second_variance / second_count) ** 0.5)
 
 
 def classify_refined_bin_position(best_position: int, bin_count: int) -> str:
@@ -721,12 +846,58 @@ def classify_refined_bin_position(best_position: int, bin_count: int) -> str:
     return "middle_best_bin"
 
 
-def infer_outcome_objective(outcome: str) -> str:
-    """Infer whether a QC outcome is usually maximized or minimized."""
-    normalized_outcome = str(outcome).lower()
-    if any(keyword in normalized_outcome for keyword in LOWER_IS_BETTER_OUTCOME_KEYWORDS):
+def tokenize_outcome_name(outcome: str) -> list[str]:
+    """Split an outcome name into lowercase whole tokens."""
+    spaced_name = re.sub(r"(?<=[a-z0-9])(?=[A-Z])", " ", str(outcome))
+    return [token for token in re.split(r"[^0-9a-zA-Z]+", spaced_name.lower()) if token]
+
+
+def keyword_matches_tokens(keyword: str, tokens: list[str]) -> bool:
+    """Return whether a keyword appears as a whole run of tokens in a name."""
+    keyword_tokens = tokenize_outcome_name(keyword)
+    if not keyword_tokens or len(keyword_tokens) > len(tokens):
+        return False
+    span = len(keyword_tokens)
+    return any(
+        tokens[start : start + span] == keyword_tokens
+        for start in range(len(tokens) - span + 1)
+    )
+
+
+def infer_outcome_objective(
+    outcome: str,
+    outcome_objectives: dict[str, str] | None = None,
+) -> str:
+    """Infer whether a QC outcome is usually maximized or minimized.
+
+    Keywords are matched as whole tokens. Substring matching inverted the
+    optimization direction for names such as ``residual_activity``, where
+    "residual" hit the lower-is-better list even though the quantity should be
+    maximized, so the response band, sweet spot, and every directional lift were
+    computed for the wrong direction. When keywords from both lists match, the
+    objective stays "unknown" and no band is emitted, which is the conservative
+    answer. ``outcome_objectives`` lets a caller override the guess per outcome.
+    """
+    if outcome_objectives:
+        override = str(outcome_objectives.get(outcome, "") or "").strip().lower()
+        if override in VALID_OUTCOME_OBJECTIVES:
+            return override
+
+    tokens = tokenize_outcome_name(outcome)
+    lower_is_better = any(
+        keyword_matches_tokens(keyword, tokens)
+        for keyword in LOWER_IS_BETTER_OUTCOME_KEYWORDS
+    )
+    higher_is_better = any(
+        keyword_matches_tokens(keyword, tokens)
+        for keyword in HIGHER_IS_BETTER_OUTCOME_KEYWORDS
+    )
+
+    if lower_is_better and higher_is_better:
+        return "unknown"
+    if lower_is_better:
         return "minimize"
-    if any(keyword in normalized_outcome for keyword in HIGHER_IS_BETTER_OUTCOME_KEYWORDS):
+    if higher_is_better:
         return "maximize"
     return "unknown"
 
@@ -902,14 +1073,17 @@ def classify_correlation_direction(correlation: float | None) -> str:
         return "positive_linear_association"
     if correlation <= -0.25:
         return "negative_linear_association"
-    return "weak_or_non_linear_linear_signal"
+    return "weak_or_non_linear_signal"
 
 
 def dataframe_to_records(dataframe: pd.DataFrame, max_rows: int | None = None) -> list[dict[str, Any]]:
     """Convert a DataFrame to JSON-safe records."""
     if dataframe is None or dataframe.empty:
         return []
-    output_dataframe = dataframe.head(max_rows).copy() if max_rows else dataframe.copy()
+    # `if max_rows` treats an explicit 0 as "no limit" and returns every row.
+    output_dataframe = (
+        dataframe.head(max_rows).copy() if max_rows is not None else dataframe.copy()
+    )
     return output_dataframe.astype(object).where(pd.notna(output_dataframe), None).to_dict("records")
 
 

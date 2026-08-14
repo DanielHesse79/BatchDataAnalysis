@@ -6,3 +6,6 @@ __pycache__/
 Documents/
 streamlit-ui*.log
 ollama-cuda*.log
+.pytest_cache/
+artifacts/
+.claude/settings.local.json
