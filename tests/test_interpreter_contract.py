@@ -119,3 +119,76 @@ def test_the_system_prompt_treats_pack_content_as_data():
     from analysis.interpreter import SYSTEM_PROMPT
 
     assert "data, not instructions" in SYSTEM_PROMPT
+
+
+class FakeStreamResponse:
+    """Minimal stand-in for a streaming requests response."""
+
+    def __init__(self, chunks):
+        self.status_code = 200
+        self._chunks = chunks
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exception_details):
+        return False
+
+    def iter_lines(self, decode_unicode=False):
+        for chunk in self._chunks:
+            yield json.dumps(chunk)
+
+
+def stream_one_interpretation(monkeypatch, chunks):
+    from analysis import interpreter as interpreter_module
+
+    monkeypatch.setattr(
+        interpreter_module.requests,
+        "post",
+        lambda *args, **kwargs: FakeStreamResponse(chunks),
+    )
+    return list(
+        interpreter_module.stream_interpretation(
+            profile_result=None,
+            audit_result=None,
+            analysis_results={},
+            merged_dataframe=None,
+            outcomes=[],
+            model="gpt-oss:20b",
+            report_pack={"guardrails": []},
+        )
+    )
+
+
+def test_a_model_that_only_reasons_raises_instead_of_returning_nothing(monkeypatch):
+    """Reasoning models stream a separate 'thinking' field; spending the whole
+    budget there produced an empty report with no error anywhere."""
+    from analysis.interpreter import OllamaInterpreterError
+
+    thinking_only = [
+        {"message": {"role": "assistant", "content": "", "thinking": "Considering..."}},
+        {"message": {"role": "assistant", "content": "", "thinking": " more..."}},
+        {"done": True},
+    ]
+
+    with pytest.raises(OllamaInterpreterError, match="without writing a report"):
+        stream_one_interpretation(monkeypatch, thinking_only)
+
+
+def test_a_model_that_writes_a_report_streams_normally(monkeypatch):
+    chunks = [
+        {"message": {"role": "assistant", "content": "## Executive Summary\n", "thinking": "hmm"}},
+        {"message": {"role": "assistant", "content": "Yield tracked feed rate."}},
+        {"done": True},
+    ]
+
+    streamed = "".join(stream_one_interpretation(monkeypatch, chunks))
+
+    assert "Executive Summary" in streamed
+    assert "feed rate" in streamed
+
+
+def test_the_answer_budget_leaves_room_for_hidden_reasoning():
+    from analysis.interpreter import RESPONSE_TOKEN_BUDGET
+
+    assert RESPONSE_TOKEN_BUDGET >= 4000

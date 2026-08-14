@@ -28,7 +28,10 @@ MODEL_LIST_TIMEOUT_SECONDS = (5, 10)
 # from the real prompt. A fixed 8192 dropped most of the evidence pack.
 MIN_NUM_CTX = 8192
 MAX_NUM_CTX = 32768
-RESPONSE_TOKEN_BUDGET = 2200
+# Generation budget for the answer. Reasoning models (gpt-oss, qwen3 thinking
+# variants) spend part of this on hidden reasoning before writing anything, and
+# a budget sized only for the report leaves nothing for the report itself.
+RESPONSE_TOKEN_BUDGET = 6000
 CHARACTERS_PER_TOKEN = 3.5
 KNOWN_OLLAMA_CLOUD_MODELS = [
     "nemotron-3-super:cloud",
@@ -197,11 +200,15 @@ def choose_default_model(available_models: list[str]) -> str:
     ]
     available_models = local_models or available_models
 
+    # Ordered to match the recommendation in docs/USER_GUIDE.md. Non-reasoning
+    # models are preferred for the default: a reasoning model spends part of its
+    # generation budget thinking before it writes anything, which is slower and
+    # can leave no room for the report on a large evidence pack.
     preferred_patterns = [
-        "qwen3.5:9b",
-        "mistral-small",
         "ministral",
-        "qwen3-35b",
+        "mistral-small",
+        "gemma4:12b",
+        "qwen3.5:9b",
         "llama3.1",
         "llama3",
         "gemma",
@@ -335,7 +342,7 @@ def stream_interpretation(
         "options": {
             "temperature": 0.15,
             "num_ctx": choose_num_ctx(estimate_message_tokens(messages)),
-            "num_predict": 2200,
+            "num_predict": RESPONSE_TOKEN_BUDGET,
             "repeat_penalty": 1.15,
             "repeat_last_n": 256,
             "stop": list(OLLAMA_STOP_MARKERS),
@@ -395,6 +402,17 @@ def stream_interpretation(
                 if final_text:
                     produced_any_text = True
                     yield clean_visible_stream_text(final_text)
+
+            if not produced_any_text:
+                # Reasoning models stream their thinking in a separate field and
+                # only then write an answer. If the whole token budget went to
+                # reasoning, the report is empty and nothing above would say so.
+                raise OllamaInterpreterError(
+                    f"{model} finished without writing a report. Reasoning models can "
+                    f"spend the entire {RESPONSE_TOKEN_BUDGET:,}-token budget thinking on a "
+                    "large evidence pack. Try a non-reasoning model such as "
+                    "ministral-3:14b, or reduce the number of selected outcomes."
+                )
 
     except requests.ConnectionError as error:
         raise OllamaInterpreterError(

@@ -354,6 +354,12 @@ Good options:
 - `nemotron-3-super:cloud`: cloud model; may be higher quality but not local.
   Requires ticking `Allow Ollama Cloud models` first.
 
+Reasoning models such as `gpt-oss:20b` also work and write good reports, but
+they spend part of the generation budget on hidden reasoning before writing
+anything. On a large evidence pack that makes them noticeably slower. If a
+reasoning model returns nothing at all, the app now says so instead of showing
+an empty report; select fewer outcomes or switch to a non-reasoning model.
+
 If a model repeats itself, leaks thinking text, or invents file paths, regenerate
 with a different model. The app includes stop tokens and output cleanup, but
 local models can still behave unevenly.
