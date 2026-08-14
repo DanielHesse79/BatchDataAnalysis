@@ -197,6 +197,26 @@ def describe_column_position(original_name: str, index: int) -> str:
     return f"{label} [column {index + 1}]"
 
 
+def make_internal_column_name(base_name: str, *taken_columns) -> str:
+    """Return a helper column name that no supplied frame already uses.
+
+    Helper columns are added to user data and dropped again afterwards, so a
+    real column of the same name would be overwritten and then deleted. Real
+    exports do contain names like `__batch_id_key`.
+    """
+    used_names: set[str] = set()
+    for columns in taken_columns:
+        used_names.update(str(column_name) for column_name in columns)
+
+    candidate_name = base_name
+    suffix = 1
+    while candidate_name in used_names:
+        suffix += 1
+        candidate_name = f"{base_name}_{suffix}"
+
+    return candidate_name
+
+
 def normalize_batch_id_series(
     batch_id_series: pd.Series,
     remove_separators: bool = True,

@@ -271,18 +271,36 @@ def filter_available_outcome_columns(
     return kept_columns
 
 
+DEFAULT_INTAKE_OPTIONS = {
+    "sheet_name": None,
+    "header_row": 0,
+    "parse_numeric_like_columns": True,
+}
+
+
 def normalize_intake_options(intake_options: Any) -> dict[str, Any]:
-    """Return the sheet/header intake options a profile can safely restore."""
+    """Return the intake options a profile can safely restore.
+
+    Numeric parsing is included: it is written into the profile and changes the
+    prepared table, so ignoring it on import silently reproduced a different
+    dataset from the one the profile was saved for.
+    """
     if not isinstance(intake_options, dict):
-        return {"sheet_name": None, "header_row": 0}
+        return dict(DEFAULT_INTAKE_OPTIONS)
 
     sheet_name = intake_options.get("sheet_name")
     header_row = intake_options.get("header_row")
     is_usable_header_row = isinstance(header_row, int) and not isinstance(header_row, bool)
+    parse_numeric = intake_options.get("parse_numeric_like_columns")
 
     return {
         "sheet_name": sheet_name if isinstance(sheet_name, str) and sheet_name else None,
         "header_row": header_row if is_usable_header_row and header_row >= 0 else 0,
+        "parse_numeric_like_columns": (
+            bool(parse_numeric)
+            if isinstance(parse_numeric, bool)
+            else DEFAULT_INTAKE_OPTIONS["parse_numeric_like_columns"]
+        ),
     }
 
 

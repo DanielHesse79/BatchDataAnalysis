@@ -50,8 +50,14 @@ def generate_analysis_report_pdf(
     interpretation_markdown: str = "",
     interpretation_validation_warnings: list[str] | None = None,
     spec_assessment=None,
+    outcome_objectives: dict[str, str] | None = None,
 ) -> bytes:
-    """Build a PDF report and return it as bytes."""
+    """Build a PDF report and return it as bytes.
+
+    ``outcome_objectives`` must be the same overrides the UI and the LLM
+    evidence pack used, or the printed response bands can point the opposite way
+    from what the user saw on screen.
+    """
     buffer = BytesIO()
     document = SimpleDocTemplate(
         buffer,
@@ -70,6 +76,7 @@ def generate_analysis_report_pdf(
         merged_dataframe=merged_dataframe,
         profile_result=profile_result,
         outcomes=outcomes,
+        outcome_objectives=outcome_objectives,
     )
 
     add_title_section(story, styles)

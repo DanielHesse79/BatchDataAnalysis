@@ -40,6 +40,7 @@ import streamlit as st
 
 from ui.state import (
     build_input_fingerprint,
+    discard_generated_interpretation,
     get_analysis_artifact,
     get_outcome_objective_overrides,
     get_shared_report_pack,
@@ -522,7 +523,14 @@ def render_outcome_objective_controls(outcome_options: list[str]) -> None:
             else:
                 objectives[outcome] = selected_choice
 
-        st.session_state["outcome_objective_overrides"] = objectives
+        if objectives != st.session_state.get("outcome_objective_overrides", {}):
+            st.session_state["outcome_objective_overrides"] = objectives
+            # An already-generated narrative and PDF were built for the previous
+            # directions, so they would now contradict the screen.
+            discard_generated_interpretation(
+                "Outcome direction changed, so the previous interpretation and PDF "
+                "were cleared. Generate them again to match the new direction."
+            )
 
 def render_analysis_results(
     analysis_results,

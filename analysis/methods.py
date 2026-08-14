@@ -312,9 +312,9 @@ def run_random_forest(
     )
 
     group_permutation, permutation_scoring_basis = calculate_group_permutation_importance(
-        feature_matrix=features.matrix,
+        modeling_dataframe=modeling_dataframe,
+        process_columns=process_columns,
         y=y,
-        feature_groups=features.feature_groups,
         repeats=permutation_repeats,
         n_estimators=n_estimators,
     )
@@ -613,9 +613,12 @@ def run_pls_time_ordered_validation(
     train_features = transform_features(train_dataframe, preprocessor)
     test_features = transform_features(test_dataframe, preprocessor)
 
+    # Component selection cross-validates within the training rows only, and
+    # fits its own preprocessing per fold, so it takes the raw frame.
     component_count, cv_results = choose_pls_component_count(
-        train_features.matrix,
-        y_train,
+        modeling_dataframe=train_dataframe,
+        process_columns=process_columns,
+        y=y_train,
         max_components=max_components,
         cv_folds=cv_folds,
     )
@@ -1041,19 +1044,22 @@ def aggregate_random_forest_variable_importance(
 
 
 def calculate_group_permutation_importance(
-    feature_matrix: np.ndarray,
+    modeling_dataframe: pd.DataFrame,
+    process_columns: list[str],
     y: np.ndarray,
-    feature_groups: dict[str, list[int]],
     repeats: int,
     n_estimators: int,
 ) -> tuple[pd.DataFrame, str]:
     """Permute all encoded columns of one process variable together.
 
-    Scored on held-out rows. An unconstrained forest fits its training rows
-    almost perfectly, so permuting there measures how well the forest memorized
-    a feature rather than how much that feature actually predicts.
+    Scored on held-out rows, with preprocessing fitted on the training rows
+    only. Two separate leaks matter here: an unconstrained forest fits its
+    training rows almost perfectly, so permuting there measures memorization
+    rather than prediction; and imputation medians, modes, and the one-hot
+    vocabulary must not be learned from the rows being scored, because this
+    score becomes ``rf_score`` and therefore drives the driver ranking.
     """
-    row_count = feature_matrix.shape[0]
+    row_count = len(modeling_dataframe)
 
     if row_count >= MINIMUM_ROWS_FOR_HELD_OUT_PERMUTATION:
         train_index, test_index = train_test_split(
@@ -1067,6 +1073,16 @@ def calculate_group_permutation_importance(
         test_index = np.arange(row_count)
         scoring_basis = "training rows (too few batches to hold data out)"
 
+    train_frame = modeling_dataframe.iloc[train_index]
+    test_frame = modeling_dataframe.iloc[test_index]
+    preprocessor = fit_feature_preprocessor(
+        dataframe=train_frame,
+        process_columns=process_columns,
+        scale_all_features=False,
+    )
+    train_features = transform_features(train_frame, preprocessor)
+    feature_groups = preprocessor.feature_groups
+
     scoring_model = RandomForestRegressor(
         n_estimators=n_estimators,
         min_samples_leaf=2,
@@ -1074,9 +1090,9 @@ def calculate_group_permutation_importance(
         n_jobs=-1,
         bootstrap=True,
     )
-    scoring_model.fit(feature_matrix[train_index], y[train_index])
+    scoring_model.fit(train_features.matrix, y[train_index])
 
-    scoring_matrix = feature_matrix[test_index]
+    scoring_matrix = transform_features(test_frame, preprocessor).matrix
     scoring_y = y[test_index]
     baseline_score = safe_r2_score(scoring_y, scoring_model.predict(scoring_matrix))
 

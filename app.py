@@ -182,6 +182,7 @@ def main() -> None:
             getattr(loaded_profile, "process_batch_id_column", None),
             get_batch_column_default_index(process_dataframe.columns),
         ),
+        key="process_batch_id_column",
     )
     qc_batch_id_column = st.selectbox(
         "Batch ID column in QC results",
@@ -191,6 +192,7 @@ def main() -> None:
             getattr(loaded_profile, "qc_batch_id_column", None),
             get_batch_column_default_index(qc_dataframe.columns),
         ),
+        key="qc_batch_id_column",
     )
 
     outcome_options = [
@@ -205,6 +207,7 @@ def main() -> None:
         "Quality outcome columns",
         options=outcome_options,
         default=[column_name for column_name in default_outcomes if column_name in outcome_options],
+        key="selected_outcome_columns_widget",
     )
 
     process_duplicate_strategy = render_duplicate_strategy(

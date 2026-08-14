@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 from html import escape
+from typing import Any
 from analysis.aggregation import (
     DUPLICATE_STRATEGIES,
     LONG_FORMAT_AGGREGATIONS,
@@ -574,7 +575,7 @@ def render_mapping_profile_import(process_columns: list[str], qc_columns: list[s
         "Load a saved mapping profile",
         type=["json"],
         key="mapping_profile_file",
-        help="Applies the batch ID columns, outcomes, and duplicate rules saved from a previous run.",
+        help="Applies the batch ID columns, outcomes, duplicate rules, and intake settings saved from a previous run.",
     )
     if profile_file is None:
         return
@@ -592,8 +593,56 @@ def render_mapping_profile_import(process_columns: list[str], qc_columns: list[s
     for warning in loaded_profile.warnings:
         st.warning(warning)
 
-    st.success(
-        f"Profile loaded from {loaded_profile.process_file_name} / {loaded_profile.qc_file_name}. "
-        "The selections below were set from it."
-    )
+    applied_profile_id = uploaded_file_identity(profile_file)
+    if st.session_state.get("applied_mapping_profile_id") != applied_profile_id:
+        st.session_state["applied_mapping_profile_id"] = applied_profile_id
+        st.session_state["loaded_mapping_profile"] = loaded_profile
+        apply_mapping_profile_to_widgets(loaded_profile)
+        # The intake controls above have already rendered this run, so a rerun is
+        # what actually makes the restored sheet and header row take effect.
+        st.rerun()
+
     st.session_state["loaded_mapping_profile"] = loaded_profile
+    st.success(
+        f"Profile applied from {loaded_profile.process_file_name} / {loaded_profile.qc_file_name}."
+    )
+
+
+def build_mapping_profile_widget_values(loaded_profile) -> dict[str, Any]:
+    """Map a loaded profile onto the widget keys the intake controls read.
+
+    Storing the parsed profile alone was not enough: the duplicate-strategy
+    selectors and the file-intake controls are keyed widgets, so they keep
+    whatever is in session state and ignore a value passed as a default.
+    """
+    widget_values: dict[str, Any] = {
+        "process_batch_id_column": loaded_profile.process_batch_id_column,
+        "qc_batch_id_column": loaded_profile.qc_batch_id_column,
+        "selected_outcome_columns_widget": list(loaded_profile.outcome_columns),
+        "process_duplicate_strategy": loaded_profile.process_duplicate_strategy,
+        "qc_duplicate_strategy": loaded_profile.qc_duplicate_strategy,
+    }
+
+    for key_prefix, intake_options in [
+        ("process_intake", loaded_profile.process_intake or {}),
+        ("qc_intake", loaded_profile.qc_intake or {}),
+    ]:
+        sheet_name = intake_options.get("sheet_name")
+        if sheet_name:
+            widget_values[f"{key_prefix}_sheet"] = sheet_name
+
+        header_row = intake_options.get("header_row")
+        if header_row is not None:
+            widget_values[f"{key_prefix}_header_row"] = int(header_row)
+
+        parse_numeric = intake_options.get("parse_numeric_like_columns")
+        if parse_numeric is not None:
+            widget_values[f"{key_prefix}_parse_numeric"] = bool(parse_numeric)
+
+    return {key: value for key, value in widget_values.items() if value is not None}
+
+
+def apply_mapping_profile_to_widgets(loaded_profile) -> None:
+    """Write a loaded profile into the widget state the controls read."""
+    for widget_key, value in build_mapping_profile_widget_values(loaded_profile).items():
+        st.session_state[widget_key] = value

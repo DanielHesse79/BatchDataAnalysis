@@ -43,7 +43,13 @@ def test_a_saved_mapping_profile_can_be_loaded_back():
     assert result.process_batch_id_column == "batch_id"
     assert result.qc_batch_id_column == "batch_id"
     assert result.outcome_columns == ["yield_g_L", "purity_percent"]
-    assert result.qc_intake == {"sheet_name": "qc_results", "header_row": 2}
+    # Numeric parsing is restored too; a profile saved with it off must not come
+    # back with it on, or the prepared table differs from the saved one.
+    assert result.qc_intake == {
+        "sheet_name": "qc_results",
+        "header_row": 2,
+        "parse_numeric_like_columns": True,
+    }
     assert result.process_duplicate_strategy == "keep_first"
     assert result.qc_duplicate_strategy == "mean"
     assert result.version == SCHEMA_VERSION

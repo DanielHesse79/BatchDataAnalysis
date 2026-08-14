@@ -35,6 +35,32 @@ def test_pdf_report_builds_without_an_interpretation(synthetic_pipeline):
     assert pdf_bytes[:5] == b"%PDF-"
 
 
+def test_pdf_honours_the_outcome_direction_override(monkeypatch, synthetic_pipeline):
+    """A PDF built without the override contradicts the screen and the LLM pack."""
+    import utils.report as report_module
+
+    captured_objectives = {}
+    original_builder = report_module.build_operating_window_hints
+
+    def recording_builder(*args, **kwargs):
+        captured_objectives["value"] = kwargs.get("outcome_objectives")
+        return original_builder(*args, **kwargs)
+
+    monkeypatch.setattr(report_module, "build_operating_window_hints", recording_builder)
+
+    overrides = {"yield_g_L": "minimize"}
+    generate_analysis_report_pdf(
+        profile_result=synthetic_pipeline["profile"],
+        audit_result=synthetic_pipeline["audit"],
+        analysis_results=synthetic_pipeline["analysis"],
+        merged_dataframe=synthetic_pipeline["dataframe"],
+        outcomes=synthetic_pipeline["outcomes"],
+        outcome_objectives=overrides,
+    )
+
+    assert captured_objectives["value"] == overrides
+
+
 def test_very_long_cell_text_is_truncated_instead_of_breaking_the_layout():
     """A cell taller than one page aborts the whole ReportLab build."""
     dataframe = pd.DataFrame({"variable": ["x" * 5_000], "note": ["y" * 12_000]})

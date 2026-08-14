@@ -422,8 +422,13 @@ def run_xgboost_shap(
     predictions = model.predict(features.matrix)
 
     booster = model.get_booster()
+    # No feature names are passed here. XGBoost rejects '[', ']' and '<' in
+    # feature names, and these names are built from user column names and
+    # category values ("temperature<limit", "grade=A[1]"). SHAP contributions
+    # come back positionally and are mapped through feature_groups, so the
+    # display labels are not needed by the booster.
     contribution_matrix = booster.predict(
-        xgb.DMatrix(features.matrix, feature_names=features.feature_names),
+        xgb.DMatrix(features.matrix),
         pred_contribs=True,
     )
     # The final column is the bias/expected-value term; drop it.

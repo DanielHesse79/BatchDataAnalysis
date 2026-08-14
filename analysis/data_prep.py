@@ -14,7 +14,7 @@ from typing import Iterable
 
 import pandas as pd
 
-from analysis.normalization import normalize_batch_id_series
+from analysis.normalization import make_internal_column_name, normalize_batch_id_series
 
 
 INTERNAL_BATCH_KEY = "__batch_id_key"
@@ -370,12 +370,19 @@ def merge_process_and_qc_data(
     process_for_merge = process_dataframe.copy()
     qc_for_merge = qc_dataframe[[qc_batch_id_column, *outcome_columns]].copy()
 
-    process_for_merge[INTERNAL_BATCH_KEY] = process_keys
-    qc_for_merge[INTERNAL_BATCH_KEY] = qc_keys
+    # A real export can contain a column called `__batch_id_key`; writing the
+    # merge key over it and dropping it afterwards would delete user data.
+    merge_key_column = make_internal_column_name(
+        INTERNAL_BATCH_KEY,
+        process_dataframe.columns,
+        qc_dataframe.columns,
+    )
+    process_for_merge[merge_key_column] = process_keys
+    qc_for_merge[merge_key_column] = qc_keys
 
     merged_dataframe = process_for_merge.merge(
-        qc_for_merge[[INTERNAL_BATCH_KEY, *outcome_columns]],
-        on=INTERNAL_BATCH_KEY,
+        qc_for_merge[[merge_key_column, *outcome_columns]],
+        on=merge_key_column,
         how="inner",
     )
 
@@ -384,14 +391,14 @@ def merge_process_and_qc_data(
             "No matching batch IDs were found. Check that the selected batch ID columns use the same IDs."
         )
 
-    matched_keys = set(merged_dataframe[INTERNAL_BATCH_KEY])
+    matched_keys = set(merged_dataframe[merge_key_column])
     process_key_set = set(process_keys)
     qc_key_set = set(qc_keys)
 
     unmatched_process_batch_ids = sorted(process_key_set - matched_keys)
     unmatched_qc_batch_ids = sorted(qc_key_set - matched_keys)
 
-    merged_dataframe = merged_dataframe.drop(columns=[INTERNAL_BATCH_KEY])
+    merged_dataframe = merged_dataframe.drop(columns=[merge_key_column])
 
     # The merged ID column keeps its own name when the process file already has
     # an unrelated column called `batch_id`. Downstream stages must use this

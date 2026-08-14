@@ -10,6 +10,7 @@ import pandas as pd
 from analysis.data_prep import DataPrepError, attach_intake_warnings
 from analysis.normalization import (
     build_missing_like_mask,
+    make_internal_column_name,
     is_missing_like,
     normalize_batch_id_series,
     parse_numeric_series,
@@ -17,6 +18,7 @@ from analysis.normalization import (
 )
 
 
+NORMALIZED_KEY_COLUMN = "__normalized_batch_key"
 ROW_POSITION_COLUMN = "__row_position"
 LONG_FORMAT_SAMPLE_ROWS = 200
 
@@ -148,18 +150,21 @@ def aggregate_duplicate_batch_rows(
             "Choose a duplicate handling rule or fix the source file."
         )
 
-    output_dataframe["__normalized_batch_key"] = batch_keys
+    # A real export can contain a column called `__normalized_batch_key`, which
+    # would be overwritten here and dropped below, losing user data.
+    key_column = make_internal_column_name(NORMALIZED_KEY_COLUMN, dataframe.columns)
+    output_dataframe[key_column] = batch_keys
     identified_rows = output_dataframe[~missing_key_mask]
     unidentified_rows = output_dataframe[missing_key_mask]
 
     if strategy == "keep_first":
-        resolved_dataframe = identified_rows.drop_duplicates("__normalized_batch_key", keep="first")
+        resolved_dataframe = identified_rows.drop_duplicates(key_column, keep="first")
     elif strategy == "keep_last":
-        resolved_dataframe = identified_rows.drop_duplicates("__normalized_batch_key", keep="last")
+        resolved_dataframe = identified_rows.drop_duplicates(key_column, keep="last")
     else:
         resolved_dataframe = aggregate_numeric_duplicates(
             identified_rows,
-            key_column="__normalized_batch_key",
+            key_column=key_column,
             strategy=strategy,
         )
 
@@ -169,7 +174,7 @@ def aggregate_duplicate_batch_rows(
             ignore_index=True,
         )
 
-    output_dataframe = resolved_dataframe.drop(columns=["__normalized_batch_key"], errors="ignore")
+    output_dataframe = resolved_dataframe.drop(columns=[key_column], errors="ignore")
     warnings.append(
         f"{label}: resolved {duplicate_count} duplicate batch ID(s) using '{DUPLICATE_STRATEGIES[strategy]}'."
     )
@@ -208,12 +213,16 @@ def aggregate_numeric_duplicates(
         working_dataframe,
         value_columns,
     )
-    working_dataframe[ROW_POSITION_COLUMN] = range(len(working_dataframe))
+    row_position_column = make_internal_column_name(
+        ROW_POSITION_COLUMN,
+        working_dataframe.columns,
+    )
+    working_dataframe[row_position_column] = range(len(working_dataframe))
     aggregation_map: dict[str, Any] = {
         column_name: (strategy if column_name in numeric_columns else "first")
         for column_name in value_columns
     }
-    aggregation_map[ROW_POSITION_COLUMN] = "min"
+    aggregation_map[row_position_column] = "min"
 
     aggregated_rows = (
         working_dataframe[duplicated_mask]
@@ -225,7 +234,7 @@ def aggregate_numeric_duplicates(
         [working_dataframe[~duplicated_mask], aggregated_rows],
         ignore_index=True,
     )
-    combined_dataframe = combined_dataframe.sort_values(ROW_POSITION_COLUMN).reset_index(drop=True)
+    combined_dataframe = combined_dataframe.sort_values(row_position_column).reset_index(drop=True)
     return combined_dataframe[list(dataframe.columns)]
 
 
@@ -387,7 +396,12 @@ def pivot_long_to_wide(
     # Decide numeric conversion per test, not for the whole value column. A QC
     # export mixes numeric assays with qualitative results ("Conforms"); a
     # column-wide decision would blank out one kind or the other.
-    numeric_test_names = select_numeric_test_names(pivot_frame, name_column, value_column)
+    numeric_test_names, conversion_warnings = select_numeric_test_names(
+        pivot_frame,
+        name_column,
+        value_column,
+    )
+    pivot_warnings.extend(conversion_warnings)
     numeric_mask = pivot_frame[name_column].isin(numeric_test_names)
 
     pivot_tables: list[pd.DataFrame] = []
@@ -449,21 +463,41 @@ def select_numeric_test_names(
     name_column: str,
     value_column: str,
     min_parse_fraction: float = 0.60,
-) -> set[str]:
-    """Return the test names whose results are mostly numeric."""
+) -> tuple[set[str], list[str]]:
+    """Return the test names whose results are mostly numeric, plus loss warnings.
+
+    The fraction is compared directly rather than through a rounded row count.
+    Flooring the requirement let a single numeric value among three
+    (``int(0.60 * 3) == 1``) convert an entire qualitative test, turning
+    "Pass"/"Fail" into missing values.
+    """
     numeric_test_names: set[str] = set()
+    warnings: list[str] = []
 
     for test_name, group in pivot_frame.groupby(name_column, sort=False):
         values = group[value_column]
-        non_missing_count = int((~values.map(is_missing_like)).sum())
-        if non_missing_count == 0:
+        present_values = values[~values.map(is_missing_like)]
+        if present_values.empty:
             continue
 
-        parsed_values, _ = parse_numeric_series(values)
-        if parsed_values.notna().sum() >= max(1, int(min_parse_fraction * non_missing_count)):
-            numeric_test_names.add(str(test_name))
+        parsed_values, _ = parse_numeric_series(present_values)
+        parsed_count = int(parsed_values.notna().sum())
+        if parsed_count / len(present_values) < min_parse_fraction:
+            continue
 
-    return numeric_test_names
+        numeric_test_names.add(str(test_name))
+
+        # A mostly-numeric test can still carry text results. Converting drops
+        # them, so say which ones rather than losing them silently.
+        unparsed_values = present_values[parsed_values.isna()]
+        if not unparsed_values.empty:
+            examples = ", ".join(unparsed_values.astype(str).drop_duplicates().head(3))
+            warnings.append(
+                f"Test '{test_name}' is mostly numeric, so {len(unparsed_values):,} "
+                f"non-numeric result(s) became missing (examples: {examples})."
+            )
+
+    return numeric_test_names, warnings
 
 
 def pivot_value_frame(

@@ -195,6 +195,24 @@ def first_or_none(values):
     """Return the first item or None."""
     return values[0] if values else None
 
+def discard_generated_interpretation(reason: str) -> None:
+    """Clear the LLM narrative and PDF bytes after their inputs changed.
+
+    Both are snapshots. Leaving them downloadable after a setting change hands
+    the user a report that disagrees with what the screen now says.
+    """
+    had_output = bool(
+        st.session_state.get("ollama_interpretation")
+        or st.session_state.get("pdf_report_bytes")
+    )
+    st.session_state["ollama_interpretation"] = ""
+    st.session_state["interpretation_validation_warnings"] = []
+    st.session_state["pdf_report_bytes"] = None
+
+    if had_output:
+        st.warning(reason)
+
+
 def get_outcome_objective_overrides() -> dict[str, str] | None:
     """Return explicit outcome directions, or None when all are automatic."""
     return st.session_state.get("outcome_objective_overrides") or None

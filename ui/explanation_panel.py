@@ -24,6 +24,7 @@ import streamlit as st
 
 from ui.state import (
     collect_stream_chunks,
+    get_outcome_objective_overrides,
     get_shared_report_pack,
     list_ollama_models_cached,
 )
@@ -61,6 +62,7 @@ def render_pdf_report_download(
                     [],
                 ),
                 spec_assessment=spec_assessment,
+                outcome_objectives=get_outcome_objective_overrides(),
             )
         except (ReportGenerationError, OSError, ValueError, RuntimeError) as error:
             st.error(f"Could not build PDF report: {error}")
