@@ -11,7 +11,9 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 import hashlib
+import os
 import sqlite3
+import sys
 
 import pandas as pd
 
@@ -19,7 +21,34 @@ import pandas as pd
 SCRIPT_VERSION = "qc_intel-0.1.0"
 PACKAGE_ROOT = Path(__file__).resolve().parent
 SCHEMA_PATH = PACKAGE_ROOT / "schema.sql"
-DEFAULT_DATABASE_PATH = PACKAGE_ROOT / "data" / "qc_intel.sqlite"
+EXAMPLE_DATABASE_PATH = PACKAGE_ROOT / "data" / "qc_intel.sqlite"
+
+
+def user_data_directory() -> Path:
+    """Return a directory this user can always write to."""
+    if sys.platform == "win32":
+        base = Path(os.environ.get("LOCALAPPDATA") or Path.home() / "AppData" / "Local")
+    elif sys.platform == "darwin":
+        base = Path.home() / "Library" / "Application Support"
+    else:
+        base = Path(os.environ.get("XDG_DATA_HOME") or Path.home() / ".local" / "share")
+    return base / "BatchInsight" / "qc_intel"
+
+
+def resolve_database_path() -> Path:
+    """Return where this installation keeps its database.
+
+    A bundled application may sit somewhere the user cannot write - Program
+    Files, a read-only network share - so the database cannot live beside the
+    code. From source it stays in the package, where the build scripts and the
+    tests expect it.
+    """
+    if getattr(sys, "frozen", False):
+        return user_data_directory() / "qc_intel.sqlite"
+    return EXAMPLE_DATABASE_PATH
+
+
+DEFAULT_DATABASE_PATH = resolve_database_path()
 
 
 @dataclass(frozen=True)
@@ -87,15 +116,25 @@ def file_checksum(path: Path | str) -> str:
     return digest.hexdigest()
 
 
+def bytes_checksum(data: bytes) -> str:
+    """Return a SHA-256 checksum of an in-memory source, such as an upload."""
+    return hashlib.sha256(data).hexdigest()
+
+
 def register_ingest(
     connection: sqlite3.Connection,
     source_file: Path | str,
     source_format: str,
     adapter: str,
     row_count: int,
+    checksum: str | None = None,
 ) -> IngestRecord:
-    """Record where a batch of rows came from, and refuse silent re-imports."""
-    checksum = file_checksum(source_file)
+    """Record where a batch of rows came from, and refuse silent re-imports.
+
+    An uploaded file has no path to read twice, so its checksum is computed from
+    the bytes and passed in. Provenance is identical either way.
+    """
+    checksum = checksum or file_checksum(source_file)
     existing = connection.execute(
         "SELECT ingest_id, source_file, source_checksum FROM ingest_log "
         "WHERE source_checksum = ? AND adapter = ?",

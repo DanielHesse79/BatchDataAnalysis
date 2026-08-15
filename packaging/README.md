@@ -59,29 +59,62 @@ than failing, so a partial install still works.
 .\.venv\Scripts\python.exe launcher.py --app qc --browser   # force a browser
 ```
 
-## What this does not yet solve
+## For users who should never see a dependency
 
-**The machine still needs Python.** The installer finds it, but cannot conjure
-it on a locked-down machine where the user may not install software at all. If
-the target is customer machines rather than your own, that is the next problem
-to solve, and there are two routes:
+The installer above still needs Python on the machine. For colleagues who are
+not developers, build the self-contained bundle instead:
 
-- **Offline wheelhouse.** Ship the dependency wheels beside the installer and
-  install with `--no-index --find-links`. Removes the need for PyPI access but
-  still needs a Python interpreter.
-- **Frozen bundle.** PyInstaller plus an Inno Setup or WiX installer produces a
-  true self-contained `.exe` with no Python prerequisite. It is the real answer
-  for external distribution, and it is a genuine piece of work: the environment
-  is over 1 GB, Streamlit's file layout needs explicit collection, and the
-  scientific wheels bring binary dependencies that PyInstaller does not always
-  find on its own. Expect a 400–700 MB installer and a slow first start.
+```powershell
+.\packaging\build_bundle.ps1 -Clean -Zip
+```
 
-**An unsigned installer will be flagged.** SmartScreen warns on unsigned
-executables and corporate AV may quarantine them outright. For anything beyond
-your own machines, budget for a code-signing certificate; it is the difference
-between "Windows protected your PC" and a normal install.
+That produces `dist\BatchInsight\` holding `BatchInsight.exe` and everything it
+needs. Users copy the folder, double-click **Batch Insight Analyzer.cmd** or
+**QC Intelligence Layer.cmd**, and the app opens in its own window. No Python,
+no pip, no administrator rights, nothing to configure.
+
+The build is a developer step. Users never run it.
+
+### How the frozen build differs
+
+A frozen application cannot start Streamlit the usual way, because
+`sys.executable` is the bundled executable rather than an interpreter. The
+launcher therefore re-runs itself in a hidden server mode and calls Streamlit's
+own `bootstrap.run` in that process. Setting `STREAMLIT_SERVER_PORT` is not
+enough: configuration is resolved before the environment is consulted, so the
+server has to be configured through `load_config_options`, exactly as
+Streamlit's CLI does it.
+
+Streamlit also executes the app as a *script*, so `app.py`, `qc_intel/app.py`
+and every package they import are shipped as real files inside the bundle
+rather than only as frozen bytecode.
+
+The bundle is built one-dir rather than one-file deliberately. One-file unpacks
+several hundred megabytes to a temporary directory on every launch, which turns
+a double click into a long wait.
+
+## Remaining friction
+
+**An unsigned build will be flagged.** SmartScreen shows "Windows protected
+your PC" and corporate antivirus may quarantine it outright. The bundle ships a
+READ ME explaining the warning, but for real distribution budget for a
+code-signing certificate. It is the difference between a warning dialog and a
+normal launch, and no amount of engineering substitutes for it.
+
+**Consider hosting it once instead.** If the people who need this are colleagues
+on one network, running a single instance on an internal machine and sending
+them a URL removes installation entirely, for everyone, forever. It also gives
+one place to update and one database for QC trending across the laboratory. For
+that audience it is less work than distributing bundles and worth deciding
+before committing to per-machine installs.
 
 **A regulated site has its own process.** On a GxP machine, installing software
 is a controlled activity regardless of how good the installer is. The apps
 declare themselves not-validated and read-only, which keeps them out of the
 qualification path, but site IT still decides what gets installed.
+
+**The QC Intelligence Layer ships as a demonstration.** It has no file intake in
+the window yet: data is loaded through `qc_intel.ingest` from Python. An
+installed copy therefore seeds itself from the bundled example dataset and says
+so, in the dashboard, until real data replaces it. A colleague can explore what
+the tool does; they cannot yet point it at their own exports.

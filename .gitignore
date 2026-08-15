@@ -12,3 +12,8 @@ artifacts/
 
 # QC Intelligence Layer prototype artefacts (regenerate with build_prototype)
 qc_intel/data/
+
+# PyInstaller build output (rebuild with packaging/build_bundle.ps1)
+build/
+dist/
+*.spec.bak

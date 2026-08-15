@@ -11,6 +11,8 @@ Run with:
 from __future__ import annotations
 
 from pathlib import Path
+import shutil
+import sys
 
 import pandas as pd
 import plotly.graph_objects as go
@@ -27,6 +29,13 @@ NOT_VALIDATED = (
     "Exploratory trending only. Not a validated system, not for run acceptance "
     "and not for regulatory reporting. Events shown alongside a change are "
     "coincident in time, not established causes."
+)
+EXAMPLE_MARKER_NAME = "EXAMPLE_DATA"
+EXAMPLE_WARNING = (
+    "**These numbers are invented.** This installation is showing the bundled "
+    "example dataset - simulated instruments, methods and results - so that the "
+    "dashboard has something to display. No laboratory data has been loaded. "
+    "Nothing here refers to any real assay, instrument or run."
 )
 
 
@@ -142,21 +151,60 @@ def control_chart(
     return figure
 
 
+def prepare_database() -> tuple[Path, bool]:
+    """Return the database path, and whether it holds only example data.
+
+    An installed copy starts with nothing to show, which makes the first run
+    useless. It is seeded from the example database in the bundle and marked, so
+    the dashboard can keep saying the numbers are invented until real data
+    replaces them.
+    """
+    database_path = db.DEFAULT_DATABASE_PATH
+    marker = database_path.parent / EXAMPLE_MARKER_NAME
+
+    seeding_needed = (
+        not database_path.exists()
+        and database_path != db.EXAMPLE_DATABASE_PATH
+        and db.EXAMPLE_DATABASE_PATH.exists()
+    )
+    if seeding_needed:
+        database_path.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(db.EXAMPLE_DATABASE_PATH, database_path)
+        marker.write_text(
+            "The database beside this file was copied from the bundled example "
+            "dataset. Delete both to start empty.\n",
+            encoding="utf-8",
+        )
+
+    return database_path, marker.exists()
+
+
 def main() -> None:
     st.title("QC Intelligence Layer")
     st.caption(NOT_VALIDATED)
 
     package_root = Path(__file__).resolve().parent
-    database_path = str(package_root / "data" / "qc_intel.sqlite")
+    database_path_object, showing_example_data = prepare_database()
+    database_path = str(database_path_object)
     config_dir = str(package_root / "config")
 
-    if not Path(database_path).exists():
-        st.error(
-            "No analytics database found. Build it first:\n\n"
-            "`python -m qc_intel.synth.generate`\n\n"
-            "`python -m qc_intel.build_prototype`"
-        )
+    if not database_path_object.exists():
+        if getattr(sys, "frozen", False):
+            st.error(
+                "No QC database found, and this installation has no example data "
+                "to fall back on. Loading laboratory exports is not yet available "
+                "from this window."
+            )
+        else:
+            st.error(
+                "No analytics database found. Build it first:\n\n"
+                "`python -m qc_intel.synth.generate`\n\n"
+                "`python -m qc_intel.build_prototype`"
+            )
         return
+
+    if showing_example_data:
+        st.warning(EXAMPLE_WARNING)
 
     cache_token = max(path.stat().st_mtime for path in Path(config_dir).glob("*.toml"))
     (

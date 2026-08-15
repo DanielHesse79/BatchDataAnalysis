@@ -15,6 +15,7 @@ hundred lines instead of a rewrite in a native toolkit.
 from __future__ import annotations
 
 import argparse
+import os
 import socket
 import subprocess
 import sys
@@ -25,7 +26,23 @@ import webbrowser
 from pathlib import Path
 
 
-PROJECT_ROOT = Path(__file__).resolve().parent
+def is_frozen() -> bool:
+    """Return whether this is running from a PyInstaller bundle."""
+    return getattr(sys, "frozen", False)
+
+
+def resource_root() -> Path:
+    """Return the directory holding the app scripts.
+
+    In a bundle the scripts are unpacked beside the executable rather than
+    living next to this source file.
+    """
+    if is_frozen():
+        return Path(getattr(sys, "_MEIPASS", Path(sys.executable).parent))
+    return Path(__file__).resolve().parent
+
+
+PROJECT_ROOT = resource_root()
 
 APPS = {
     "batch": {
@@ -53,16 +70,84 @@ def find_free_port() -> int:
         return int(probe.getsockname()[1])
 
 
+def serve_in_process(script: Path, port: int) -> None:
+    """Run the Streamlit server in this process and block.
+
+    A frozen build cannot shell out to `python -m streamlit`, because
+    sys.executable is the bundled executable rather than an interpreter. The
+    server is therefore started through Streamlit's own bootstrap, in a process
+    whose main thread is free to take the signal handlers it installs.
+
+    The sequence mirrors Streamlit's own CLI: record the script path, load the
+    config overrides, then run. Setting environment variables alone is not
+    enough - config is resolved before they are consulted, and the server comes
+    up on its default port instead of the one the launcher reserved.
+    """
+    from streamlit import config as streamlit_config
+    from streamlit.web import bootstrap
+
+    flag_options = {
+        "server.port": port,
+        "server.address": "127.0.0.1",
+        "server.headless": True,
+        "server.fileWatcherType": "none",
+        "browser.gatherUsageStats": False,
+        "global.developmentMode": False,
+    }
+
+    streamlit_config._main_script_path = str(script)
+    bootstrap.load_config_options(flag_options=flag_options)
+    bootstrap.run(str(script), False, [], flag_options)
+
+
+def check_imports() -> int:
+    """Import every shipped module and report the ones that fail.
+
+    A frozen build only contains what PyInstaller found by following imports
+    from the entry point. The application packages are shipped as files, so
+    nothing imports them during analysis and a missing dependency stays hidden
+    until a user opens the page that needs it. Walking them here turns that into
+    a build failure instead.
+    """
+    import importlib
+    import pkgutil
+
+    failures = []
+    for package_name in ("analysis", "ui", "utils", "qc_intel"):
+        try:
+            package = importlib.import_module(package_name)
+        except Exception as error:  # noqa: BLE001 - reporting, not handling
+            failures.append(f"{package_name}: {error}")
+            continue
+
+        for module in pkgutil.walk_packages(package.__path__, f"{package_name}."):
+            if ".tests" in module.name:
+                continue
+            try:
+                importlib.import_module(module.name)
+            except Exception as error:  # noqa: BLE001 - reporting, not handling
+                failures.append(f"{module.name}: {error}")
+
+    for failure in failures:
+        print(failure, file=sys.stderr)
+    return 1 if failures else 0
+
+
 def start_streamlit(script: Path, port: int) -> subprocess.Popen:
-    """Start Streamlit headless so this process owns the window."""
-    command = [
-        sys.executable, "-m", "streamlit", "run", str(script),
-        "--server.port", str(port),
-        "--server.address", "127.0.0.1",
-        "--server.headless", "true",
-        "--browser.gatherUsageStats", "false",
-        "--server.fileWatcherType", "none",
-    ]
+    """Start the Streamlit server as a child process."""
+    if is_frozen():
+        # Re-run this same executable in server mode. Keeping the server in its
+        # own process means the window can still be closed by killing a tree.
+        command = [sys.executable, "--serve", "--app-script", str(script), "--port", str(port)]
+    else:
+        command = [
+            sys.executable, "-m", "streamlit", "run", str(script),
+            "--server.port", str(port),
+            "--server.address", "127.0.0.1",
+            "--server.headless", "true",
+            "--browser.gatherUsageStats", "false",
+            "--server.fileWatcherType", "none",
+        ]
 
     creation_flags = 0
     if sys.platform == "win32":
@@ -176,7 +261,24 @@ def main() -> int:
         "--browser", action="store_true",
         help="Open in the default browser instead of an application window.",
     )
+    # Internal: the frozen build re-runs itself in this mode to host the server.
+    parser.add_argument("--serve", action="store_true", help=argparse.SUPPRESS)
+    parser.add_argument("--app-script", default=None, help=argparse.SUPPRESS)
+    parser.add_argument("--port", type=int, default=None, help=argparse.SUPPRESS)
+    # Internal: the build script runs this against the bundle it just produced.
+    parser.add_argument("--check-imports", action="store_true", help=argparse.SUPPRESS)
     arguments = parser.parse_args()
+
+    if arguments.check_imports:
+        return check_imports()
+
+    if arguments.serve:
+        script = Path(arguments.app_script) if arguments.app_script else (
+            PROJECT_ROOT / APPS[arguments.app]["script"]
+        )
+        serve_in_process(script, arguments.port or find_free_port())
+        return 0
+
     return run(arguments.app, arguments.browser)
 
 

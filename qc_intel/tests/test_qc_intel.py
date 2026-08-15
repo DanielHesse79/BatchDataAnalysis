@@ -520,3 +520,28 @@ def test_a_chart_without_events_still_renders(prototype):
     )
 
     assert figure.data
+
+
+def test_the_database_stays_in_the_package_when_running_from_source():
+    """Build scripts, tests and the docs all expect qc_intel/data/ from source."""
+    assert db.resolve_database_path() == db.EXAMPLE_DATABASE_PATH
+
+
+def test_an_installed_copy_writes_outside_its_own_directory(monkeypatch):
+    """A bundle may sit in Program Files or on a read-only share."""
+    monkeypatch.setattr(db.sys, "frozen", True, raising=False)
+
+    resolved = db.resolve_database_path()
+
+    assert resolved != db.EXAMPLE_DATABASE_PATH
+    assert db.PACKAGE_ROOT not in resolved.parents
+
+
+def test_the_writable_directory_is_per_user(monkeypatch, tmp_path):
+    monkeypatch.setenv("LOCALAPPDATA", str(tmp_path))
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path))
+
+    directory = db.user_data_directory()
+
+    assert tmp_path in directory.parents
+    assert directory.name == "qc_intel"
