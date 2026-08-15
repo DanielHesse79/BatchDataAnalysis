@@ -22,6 +22,7 @@ from qc_intel import db
 from qc_intel.alerts import render_alert
 from qc_intel.config import load_all_method_configs
 from qc_intel.detectors import find_events_near
+from qc_intel.intake_panel import render_intake
 from qc_intel.pipeline import analyze
 
 SEVERITY_COLOURS = {"critical": "#9E3833", "warning": "#8A6414", "watch": "#41627A"}
@@ -151,32 +152,49 @@ def control_chart(
     return figure
 
 
-def prepare_database() -> tuple[Path, bool]:
-    """Return the database path, and whether it holds only example data.
+def prepare_database() -> tuple[Path, Path | None]:
+    """Return the database path, and the example marker if one is in force.
 
     An installed copy starts with nothing to show, which makes the first run
     useless. It is seeded from the example database in the bundle and marked, so
-    the dashboard can keep saying the numbers are invented until real data
-    replaces them.
+    the dashboard keeps saying the numbers are invented until real data replaces
+    them. With no example to copy, an empty database is created instead - the
+    intake needs somewhere to write, and an empty schema is that somewhere.
     """
     database_path = db.DEFAULT_DATABASE_PATH
     marker = database_path.parent / EXAMPLE_MARKER_NAME
 
-    seeding_needed = (
-        not database_path.exists()
-        and database_path != db.EXAMPLE_DATABASE_PATH
-        and db.EXAMPLE_DATABASE_PATH.exists()
-    )
-    if seeding_needed:
+    if not database_path.exists():
         database_path.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(db.EXAMPLE_DATABASE_PATH, database_path)
-        marker.write_text(
-            "The database beside this file was copied from the bundled example "
-            "dataset. Delete both to start empty.\n",
-            encoding="utf-8",
+        can_seed = (
+            database_path != db.EXAMPLE_DATABASE_PATH
+            and db.EXAMPLE_DATABASE_PATH.exists()
         )
+        if can_seed:
+            shutil.copy2(db.EXAMPLE_DATABASE_PATH, database_path)
+            marker.write_text(
+                "The database beside this file was copied from the bundled "
+                "example dataset. Delete both to start empty.\n",
+                encoding="utf-8",
+            )
+        else:
+            with db.connection_scope(database_path) as connection:
+                db.create_schema(connection)
 
-    return database_path, marker.exists()
+    return database_path, marker if marker.exists() else None
+
+
+def analysis_cache_token(config_dir: str, database_path: Path) -> float:
+    """Invalidate the cached analysis when config or data changes.
+
+    The database is part of the key, so loading a file through the intake makes
+    every derived statistic recompute without anyone having to remember to
+    clear a cache.
+    """
+    stamps = [path.stat().st_mtime for path in Path(config_dir).glob("*.toml")]
+    if database_path.exists():
+        stamps.append(database_path.stat().st_mtime)
+    return max(stamps, default=0.0)
 
 
 def main() -> None:
@@ -184,40 +202,34 @@ def main() -> None:
     st.caption(NOT_VALIDATED)
 
     package_root = Path(__file__).resolve().parent
-    database_path_object, showing_example_data = prepare_database()
+    database_path_object, example_marker = prepare_database()
     database_path = str(database_path_object)
     config_dir = str(package_root / "config")
 
-    if not database_path_object.exists():
-        if getattr(sys, "frozen", False):
-            st.error(
-                "No QC database found, and this installation has no example data "
-                "to fall back on. Loading laboratory exports is not yet available "
-                "from this window."
-            )
-        else:
-            st.error(
-                "No analytics database found. Build it first:\n\n"
-                "`python -m qc_intel.synth.generate`\n\n"
-                "`python -m qc_intel.build_prototype`"
-            )
-        return
-
-    if showing_example_data:
+    if example_marker is not None:
         st.warning(EXAMPLE_WARNING)
 
-    cache_token = max(path.stat().st_mtime for path in Path(config_dir).glob("*.toml"))
+    cache_token = analysis_cache_token(config_dir, database_path_object)
     (
         observations, descriptives, findings_frame, events,
         run_series, baselines, findings, configs, ingest_log,
     ) = run_analysis(database_path, config_dir, cache_token)
 
     if observations.empty:
-        st.warning("The database contains no QC observations.")
+        st.info(
+            "This database holds no QC results yet. Load an export below to "
+            "begin."
+            if getattr(sys, "frozen", False) else
+            "This database holds no QC results yet. Load an export below, or "
+            "build the example dataset with `python -m qc_intel.synth.generate` "
+            "and `python -m qc_intel.build_prototype`."
+        )
+        render_intake(database_path, example_marker)
         return
 
-    overview, chart, drift, comparison, provenance = st.tabs(
-        ["Overview", "Control chart", "Drift ranking", "Instrument comparison", "Provenance"]
+    overview, chart, drift, comparison, provenance, load = st.tabs(
+        ["Overview", "Control chart", "Drift ranking", "Instrument comparison",
+         "Provenance", "Load data"]
     )
 
     # ------------------------------------------------------------- overview
@@ -382,6 +394,10 @@ def main() -> None:
             ]].round(4),
             width="stretch", hide_index=True,
         )
+
+    # ----------------------------------------------------------- load data
+    with load:
+        render_intake(database_path, example_marker)
 
 
 if __name__ == "__main__":

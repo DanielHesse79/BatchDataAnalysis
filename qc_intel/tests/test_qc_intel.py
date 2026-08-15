@@ -15,7 +15,19 @@ from qc_intel import db
 from qc_intel.alerts import render_alert
 from qc_intel.config import ConfigError, load_all_method_configs, load_method_config
 from qc_intel.detectors import find_events_near
-from qc_intel.ingest.generic_tabular import IngestError, import_table, read_tabular
+from qc_intel.ingest.generic_tabular import (
+    IngestError,
+    import_frame,
+    import_table,
+    read_tabular,
+)
+from qc_intel.ingest.interactive import (
+    apply_mapping,
+    missing_required_columns,
+    screen_for_personal_data,
+    suggest_column_mapping,
+    suggest_target_table,
+)
 from qc_intel.pipeline import build_from_scratch, control_false_discovery
 from qc_intel.stats import (
     align_timestamp_to,
@@ -545,3 +557,206 @@ def test_the_writable_directory_is_per_user(monkeypatch, tmp_path):
 
     assert tmp_path in directory.parents
     assert directory.name == "qc_intel"
+
+
+# --------------------------------------------------------- interactive intake
+# Headings taken from the shape of real chromatography exports: a run is a
+# "Sample Set", the number is a "Result", and decimals arrive with commas.
+QC_RESULT_EXPORT = pd.DataFrame({
+    "Sample Set Name": ["RUN-001", "RUN-001"],
+    "QC Level": ["LQC", "HQC"],
+    "Result": ["1,25", "9,80"],
+    "Acq. Date/Time": ["2026-01-04 08:15", "2026-01-04 08:40"],
+    "Operator": ["A-17", "A-17"],
+})
+
+RUN_EXPORT = pd.DataFrame({
+    "Sample Set Name": ["RUN-001"],
+    "Method": ["M-CORT-01"],
+    "System": ["LC-02"],
+    "Acq. Date/Time": ["2026-01-04 08:15"],
+})
+
+
+def test_a_qc_export_is_recognised_from_its_headings():
+    assert suggest_target_table(QC_RESULT_EXPORT.columns) == "qc_result"
+
+
+def test_a_run_export_is_not_mistaken_for_its_results():
+    """Both carry a run identifier; only one carries method and instrument."""
+    assert suggest_target_table(RUN_EXPORT.columns) == "analytical_run"
+
+
+def test_vendor_headings_map_to_canonical_columns():
+    mapping = suggest_column_mapping(QC_RESULT_EXPORT.columns, "qc_result")
+
+    assert mapping["run_id"] == "Sample Set Name"
+    assert mapping["qc_level"] == "QC Level"
+    assert mapping["measured_value"] == "Result"
+    assert not missing_required_columns(mapping, "qc_result")
+
+
+def test_decimal_commas_survive_the_mapping():
+    mapping = suggest_column_mapping(QC_RESULT_EXPORT.columns, "qc_result")
+
+    canonical, report = apply_mapping(QC_RESULT_EXPORT, mapping, "qc_result")
+
+    assert list(canonical["measured_value"]) == [1.25, 9.80]
+    assert not report.unparsed_numbers
+
+
+def test_columns_nobody_mapped_are_discarded_rather_than_stored():
+    """The database should never receive a column no one chose to send."""
+    mapping = suggest_column_mapping(QC_RESULT_EXPORT.columns, "qc_result")
+
+    canonical, report = apply_mapping(QC_RESULT_EXPORT, mapping, "qc_result")
+
+    assert "Operator" in report.dropped_columns
+    assert not any("perator" in str(column) for column in canonical.columns)
+
+
+def test_timestamps_are_stored_as_iso_text():
+    mapping = suggest_column_mapping(RUN_EXPORT.columns, "analytical_run")
+
+    canonical, _report = apply_mapping(RUN_EXPORT, mapping, "analytical_run")
+
+    assert canonical.loc[0, "acquisition_timestamp"] == "2026-01-04T08:15:00"
+
+
+def test_a_named_person_is_refused_before_anything_is_written():
+    frame = pd.DataFrame({
+        "Patient Name": ["Anna Svensson"],
+        "QC Level": ["LQC"],
+        "Result": [1.2],
+    })
+
+    findings = screen_for_personal_data(frame)
+
+    assert [finding.column for finding in findings] == ["Patient Name"]
+    assert findings[0].blocking
+
+
+def test_identity_numbers_are_caught_under_a_neutral_heading():
+    """An export can call a column 'Ref 2' and fill it with personal numbers."""
+    frame = pd.DataFrame({
+        "Ref 2": ["19850101-1234", "19900312-5678", "19771122-9012"],
+    })
+
+    findings = screen_for_personal_data(frame)
+
+    assert findings and findings[0].blocking
+
+
+def test_ordinary_qc_columns_are_not_flagged():
+    """A screen that cries wolf gets clicked through."""
+    assert screen_for_personal_data(QC_RESULT_EXPORT) == []
+
+
+def test_an_upload_records_provenance_from_its_bytes(tmp_path):
+    """An upload has no path to re-read, so the checksum comes from the file."""
+    connection = db.reset_database(tmp_path / "qc.sqlite")
+    checksum = db.bytes_checksum(b"instrument export")
+
+    written = import_frame(
+        connection,
+        pd.DataFrame({"instrument_id": ["LC-01", "LC-02"]}),
+        "instrument",
+        source_name="instruments.csv",
+        source_format="csv",
+        checksum=checksum,
+    )
+    log = db.read_sql(connection, "SELECT * FROM ingest_log")
+    connection.close()
+
+    assert written == 2
+    assert log.loc[0, "source_checksum"] == checksum
+
+
+def test_the_same_upload_twice_is_refused(tmp_path):
+    connection = db.reset_database(tmp_path / "qc.sqlite")
+    arguments = {
+        "table": "instrument",
+        "source_name": "instruments.csv",
+        "source_format": "csv",
+        "checksum": db.bytes_checksum(b"same file"),
+    }
+    frame = pd.DataFrame({"instrument_id": ["LC-01"]})
+
+    import_frame(connection, frame, **arguments)
+
+    with pytest.raises(db.DuplicateSourceError):
+        import_frame(connection, frame, **arguments)
+    connection.close()
+
+
+def test_a_rejected_file_leaves_no_provenance_behind(tmp_path):
+    """A committed ingest_log row claims the file loaded and blocks the retry."""
+    connection = db.reset_database(tmp_path / "qc.sqlite")
+    orphan_results = pd.DataFrame({
+        "run_id": ["RUN-404"],
+        "qc_level": ["LQC"],
+        "measured_value": [1.2],
+    })
+    arguments = {
+        "table": "qc_result",
+        "source_name": "qc_results.csv",
+        "source_format": "csv",
+        "checksum": db.bytes_checksum(b"orphan results"),
+    }
+
+    with pytest.raises(IngestError, match="runs"):
+        import_frame(connection, orphan_results, **arguments)
+
+    assert db.read_sql(connection, "SELECT * FROM ingest_log").empty
+
+    # The same file must still be retryable rather than refused as a duplicate.
+    with pytest.raises(IngestError, match="runs"):
+        import_frame(connection, orphan_results, **arguments)
+    connection.close()
+
+
+def test_a_missing_parent_is_explained_in_the_analyst_s_words(tmp_path):
+    connection = db.reset_database(tmp_path / "qc.sqlite")
+
+    with pytest.raises(IngestError) as failure:
+        import_frame(
+            connection,
+            pd.DataFrame({"run_id": ["R1"], "qc_level": ["LQC"], "measured_value": [1.0]}),
+            "qc_result",
+            source_name="qc_results.csv",
+            source_format="csv",
+            checksum=db.bytes_checksum(b"x"),
+        )
+    connection.close()
+
+    message = str(failure.value)
+    assert "runs" in message and "FOREIGN KEY" not in message
+    assert "Nothing was written" in message
+
+
+def test_timestamps_from_different_exports_load_together(tmp_path):
+    """A CDS writes an offset, a LIMS export does not. One database holds both."""
+    connection = db.reset_database(tmp_path / "qc.sqlite")
+    db.insert_frame(connection, "method", pd.DataFrame([{
+        "method_id": "M1", "method_name": "Assay", "method_version": "1",
+        "analyte": "cortisol",
+    }]))
+    db.insert_frame(connection, "instrument", pd.DataFrame([{"instrument_id": "LC-1"}]))
+    db.insert_frame(connection, "analytical_run", pd.DataFrame([
+        {"run_id": "R1", "method_id": "M1", "instrument_id": "LC-1",
+         "acquisition_timestamp": "2026-02-02T08:15:00+00:00"},
+        {"run_id": "R2", "method_id": "M1", "instrument_id": "LC-1",
+         "acquisition_timestamp": "2026-02-03T08:20:00"},
+    ]))
+    db.insert_frame(connection, "qc_result", pd.DataFrame([
+        {"run_id": "R1", "qc_level": "low_qc", "measured_value": 1.0,
+         "evaluation_type": "quantitative"},
+        {"run_id": "R2", "qc_level": "low_qc", "measured_value": 1.1,
+         "evaluation_type": "quantitative"},
+    ]))
+
+    observations = db.load_qc_observations(connection)
+    connection.close()
+
+    assert len(observations) == 2
+    assert observations["acquisition_timestamp"].is_monotonic_increasing

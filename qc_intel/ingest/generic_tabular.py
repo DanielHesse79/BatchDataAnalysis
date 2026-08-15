@@ -15,7 +15,12 @@ import sqlite3
 
 import pandas as pd
 
-from qc_intel.db import DuplicateSourceError, insert_frame, register_ingest
+from qc_intel.db import (
+    DuplicateSourceError,
+    insert_frame,
+    register_ingest,
+    transaction,
+)
 
 
 ADAPTER_NAME = "generic_tabular"
@@ -129,28 +134,97 @@ def import_table(
     """
     path = Path(path)
     frame = read_tabular(path)
-    validate_frame(frame, table, path.name)
+
+    return import_frame(
+        connection,
+        frame,
+        table,
+        source_name=str(path),
+        source_format=path.suffix.lstrip(".").lower(),
+        checksum=None,
+        skip_if_imported=skip_if_imported,
+    )
+
+
+def import_frame(
+    connection: sqlite3.Connection,
+    frame: pd.DataFrame,
+    table: str,
+    source_name: str,
+    source_format: str,
+    checksum: str | None = None,
+    skip_if_imported: bool = False,
+    adapter: str = ADAPTER_NAME,
+) -> int:
+    """Import an already-read frame into one canonical table.
+
+    Shared by the file adapter above and the interactive upload, so both record
+    provenance the same way and neither can bypass validation. An upload has no
+    path to re-read, so it supplies a checksum of its bytes.
+    """
+    display_name = Path(source_name).name
+    validate_frame(frame, table, display_name)
 
     try:
-        ingest_record = register_ingest(
-            connection,
-            source_file=path,
-            source_format=path.suffix.lstrip(".").lower(),
-            adapter=f"{ADAPTER_NAME}:{table}",
-            row_count=len(frame),
-        )
+        # One transaction: a rejected file must not leave provenance behind
+        # claiming it was loaded, which would also block the corrected version.
+        with transaction(connection):
+            ingest_record = register_ingest(
+                connection,
+                source_file=source_name,
+                source_format=source_format,
+                adapter=f"{adapter}:{table}",
+                row_count=len(frame),
+                checksum=checksum,
+                commit=False,
+            )
+
+            aligned = align_to_schema(frame, table)
+            if "ingest_id" in aligned.columns:
+                aligned["ingest_id"] = ingest_record.ingest_id
+            if "source_row" in aligned.columns:
+                aligned["source_row"] = [
+                    existing if pd.notna(existing) else f"{display_name}:{index + 2}"
+                    for index, existing in enumerate(aligned["source_row"])
+                ]
+
+            written = insert_frame(
+                connection, table, aligned, replace_existing=True, commit=False,
+            )
     except DuplicateSourceError:
         if skip_if_imported:
             return 0
         raise
+    except sqlite3.IntegrityError as error:
+        raise IngestError(explain_integrity_error(error, table, display_name)) from error
 
-    aligned = align_to_schema(frame, table)
-    if "ingest_id" in aligned.columns:
-        aligned["ingest_id"] = ingest_record.ingest_id
-    if "source_row" in aligned.columns:
-        aligned["source_row"] = [
-            existing if pd.notna(existing) else f"{path.name}:{index + 2}"
-            for index, existing in enumerate(aligned["source_row"])
-        ]
+    return written
 
-    return insert_frame(connection, table, aligned, replace_existing=True)
+
+# What each table's rows have to point at. Named in the words an analyst uses,
+# because "FOREIGN KEY constraint failed" describes the database's problem
+# rather than theirs.
+PARENT_DATA = {
+    "qc_result": "runs",
+    "calibration": "runs",
+    "calibrator_point": "calibrations",
+    "run_material": "runs and materials",
+    "analytical_run": "methods and instruments",
+}
+
+
+def explain_integrity_error(
+    error: sqlite3.IntegrityError, table: str, source_name: str,
+) -> str:
+    """Turn a constraint failure into an instruction."""
+    message = str(error).lower()
+
+    if "foreign key" in message and table in PARENT_DATA:
+        parent = PARENT_DATA[table]
+        return (
+            f"{source_name} refers to {parent} that are not in the database yet. "
+            f"Load the {parent} first, then load this file again. "
+            "Nothing was written."
+        )
+
+    return f"{source_name} could not be written: {error}. Nothing was written."

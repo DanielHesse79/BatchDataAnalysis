@@ -121,6 +121,24 @@ def bytes_checksum(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
 
 
+@contextmanager
+def transaction(connection: sqlite3.Connection):
+    """Group writes so a failure leaves no trace, provenance included.
+
+    Registering an ingest and inserting its rows have to succeed or fail
+    together. Committed separately, a rejected file still leaves a row in
+    ingest_log - which claims the file was loaded and then blocks the corrected
+    version as a duplicate.
+    """
+    try:
+        yield connection
+    except Exception:
+        connection.rollback()
+        raise
+    else:
+        connection.commit()
+
+
 def register_ingest(
     connection: sqlite3.Connection,
     source_file: Path | str,
@@ -128,6 +146,7 @@ def register_ingest(
     adapter: str,
     row_count: int,
     checksum: str | None = None,
+    commit: bool = True,
 ) -> IngestRecord:
     """Record where a batch of rows came from, and refuse silent re-imports.
 
@@ -160,7 +179,8 @@ def register_ingest(
             row_count,
         ),
     )
-    connection.commit()
+    if commit:
+        connection.commit()
     return IngestRecord(int(cursor.lastrowid), str(source_file), checksum)
 
 
@@ -173,6 +193,7 @@ def insert_frame(
     table: str,
     frame: pd.DataFrame,
     replace_existing: bool = False,
+    commit: bool = True,
 ) -> int:
     """Insert a DataFrame whose columns match the table's columns."""
     if frame.empty:
@@ -183,7 +204,8 @@ def insert_frame(
     verb = "INSERT OR REPLACE" if replace_existing else "INSERT"
     statement = f"{verb} INTO {table} ({', '.join(columns)}) VALUES ({placeholders})"
     connection.executemany(statement, frame.astype(object).where(frame.notna(), None).to_numpy().tolist())
-    connection.commit()
+    if commit:
+        connection.commit()
     return len(frame)
 
 
@@ -229,11 +251,26 @@ ORDER BY r.acquisition_timestamp, q.injection_index
 """
 
 
+def parse_timestamps(values: pd.Series) -> pd.Series:
+    """Read ISO-8601 timestamps that may or may not carry an offset.
+
+    Exports disagree: a chromatography system usually writes an offset, a LIMS
+    export often writes none. Left to infer, pandas takes the format of the
+    first row and then fails on the second source - which is what happens as
+    soon as one database holds files from both.
+
+    Everything is read as ISO-8601 and expressed in UTC. A value with no offset
+    is taken to be UTC rather than shifted, so a laboratory's own runs stay in
+    the order it recorded them.
+    """
+    return pd.to_datetime(values, format="ISO8601", utc=True)
+
+
 def load_qc_observations(connection: sqlite3.Connection) -> pd.DataFrame:
     """Load the flat QC observation table every statistic is built from."""
     frame = read_sql(connection, QC_OBSERVATION_QUERY)
     if not frame.empty:
-        frame["acquisition_timestamp"] = pd.to_datetime(frame["acquisition_timestamp"])
+        frame["acquisition_timestamp"] = parse_timestamps(frame["acquisition_timestamp"])
     return frame
 
 
@@ -241,7 +278,7 @@ def load_events(connection: sqlite3.Connection) -> pd.DataFrame:
     """Load laboratory events."""
     frame = read_sql(connection, "SELECT * FROM lab_event ORDER BY event_timestamp")
     if not frame.empty:
-        frame["event_timestamp"] = pd.to_datetime(frame["event_timestamp"])
+        frame["event_timestamp"] = parse_timestamps(frame["event_timestamp"])
     return frame
 
 
@@ -257,5 +294,5 @@ def load_calibrations(connection: sqlite3.Connection) -> pd.DataFrame:
         """,
     )
     if not frame.empty:
-        frame["acquisition_timestamp"] = pd.to_datetime(frame["acquisition_timestamp"])
+        frame["acquisition_timestamp"] = parse_timestamps(frame["acquisition_timestamp"])
     return frame

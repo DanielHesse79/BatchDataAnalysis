@@ -63,14 +63,31 @@ qc_intel/
     config/*.toml       one file per method
     ingest/
         generic_tabular.py   CSV/TSV/XLSX -> canonical rows, with provenance
+        interactive.py       table detection, column mapping, personal-data screen
+    intake_panel.py     the Load data tab (view only)
     stats.py            descriptives, run-ordered rolling stats, Theil-Sen, BH
     detectors.py        step change, gradual drift, variance increase
     alerts.py           deterministic alert templates
     pipeline.py         RAW -> NORMALIZED -> DERIVED orchestration
     app.py              Streamlit dashboard
     synth/generate.py   synthetic history with planted, machine-readable truth
-    tests/              30 tests
+    tests/              53 tests
 ```
+
+## Loading data
+
+The Load data tab takes an export as it comes: sheets, a header row three lines
+down, decimal commas, vendor headings. It proposes a target table and a column
+mapping, both correctable, and writes only what was mapped.
+
+Before any of that it screens for personal data, on headings and on values, and
+withholds what it finds. Unmapped columns are discarded rather than stored, so
+the database cannot accumulate identifiable data by accident. That is the whole
+reason the screen runs at intake rather than in a policy document.
+
+Registering the file and inserting its rows happen in one transaction. A
+rejected file leaves no `ingest_log` entry claiming it loaded - which would also
+block the corrected version as a duplicate.
 
 ## Data flow
 

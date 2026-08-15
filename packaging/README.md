@@ -113,8 +113,7 @@ is a controlled activity regardless of how good the installer is. The apps
 declare themselves not-validated and read-only, which keeps them out of the
 qualification path, but site IT still decides what gets installed.
 
-**The QC Intelligence Layer ships as a demonstration.** It has no file intake in
-the window yet: data is loaded through `qc_intel.ingest` from Python. An
-installed copy therefore seeds itself from the bundled example dataset and says
-so, in the dashboard, until real data replaces it. A colleague can explore what
-the tool does; they cannot yet point it at their own exports.
+**The QC Intelligence Layer starts on example data.** An installed copy seeds
+itself from the bundled example dataset and says so, in the dashboard, until
+real data replaces it. Loading real data is done in the Load data tab, and the
+notice disappears with the first file.
