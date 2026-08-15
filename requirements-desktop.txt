@@ -1,0 +1,8 @@
+# Desktop window support for launcher.py.
+#
+# pywebview renders the app in a native window using the OS web view (Edge
+# WebView2 on Windows 11), so users get a taskbar app instead of a browser tab.
+# Without it the launcher still works and falls back to the default browser.
+-r requirements.txt
+
+pywebview==6.1
