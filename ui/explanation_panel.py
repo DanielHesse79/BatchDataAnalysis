@@ -234,6 +234,12 @@ def render_explanation_controls(
                         model=selected_model,
                         base_url=base_url,
                         generate=replaying_generator(narrative),
+                        # Offer the other local models as a last resort. Their
+                        # failures are complementary, not merely different.
+                        fallback_models=[
+                            option for option in model_options
+                            if option != selected_model and not is_cloud_model(option)
+                        ][:2],
                     )
                 narrative = loop_result.text or narrative
                 warnings = loop_result.warnings

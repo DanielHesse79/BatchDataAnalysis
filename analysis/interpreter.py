@@ -308,6 +308,45 @@ def mark_summary_trimmed(
     return {**summary, "context_budget_note": note}
 
 
+def looks_like_thinking_unsupported(body: str) -> bool:
+    """Whether Ollama refused the request because the model has no thinking mode."""
+    lowered = body.lower()
+    return "think" in lowered and "support" in lowered
+
+
+def open_chat_stream(base_url: str, request_payload: dict[str, Any]):
+    """POST to Ollama's chat endpoint, asking the model not to think.
+
+    Telling a model `/no_think` in the prompt is not enough. qwen3.5 obeys the
+    API flag and ignores the text, so without this it reasons until the whole
+    generation budget is gone and returns an empty report - which is exactly how
+    it behaved here, in six runs out of six.
+
+    Models that have no thinking mode reject the field outright, so the request
+    is retried without it. Nothing has been streamed at that point, so the retry
+    is invisible. Detecting support this way rather than from a list means a new
+    model needs no code change.
+    """
+    with_thinking_disabled = {**request_payload, "think": False}
+    response = requests.post(
+        f"{base_url}/api/chat",
+        json=with_thinking_disabled,
+        stream=True,
+        timeout=REQUEST_TIMEOUT_SECONDS,
+    )
+
+    if response.status_code == 400 and looks_like_thinking_unsupported(response.text):
+        response.close()
+        response = requests.post(
+            f"{base_url}/api/chat",
+            json=request_payload,
+            stream=True,
+            timeout=REQUEST_TIMEOUT_SECONDS,
+        )
+
+    return response
+
+
 def stream_interpretation(
     profile_result,
     audit_result,
@@ -367,12 +406,7 @@ def stream_interpretation(
     produced_any_text = False
 
     try:
-        with requests.post(
-            f"{base_url}/api/chat",
-            json=request_payload,
-            stream=True,
-            timeout=REQUEST_TIMEOUT_SECONDS,
-        ) as response:
+        with open_chat_stream(base_url, request_payload) as response:
             if response.status_code != 200:
                 raise OllamaInterpreterError(
                     f"Ollama returned HTTP {response.status_code}: {response.text}"

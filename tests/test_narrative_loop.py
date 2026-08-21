@@ -142,10 +142,57 @@ def test_missing_headings_reports_what_is_absent():
 
 
 def test_plan_attempt_never_rewrites_the_first_prompt():
-    strategy, messages, overrides = plan_attempt(1, PACK, "", [], ["yield_g_L"])
+    plan = plan_attempt(1, PACK, "", [], ["yield_g_L"], model="a")
 
-    assert strategy == "base"
-    assert messages is None and overrides is None
+    assert plan.strategy == "base"
+    assert plan.messages is None and plan.overrides is None
+
+
+def test_the_ladder_reaches_section_by_section_before_giving_up():
+    """Measured: gpt-oss:20b failed the skeleton twice and still lost a heading."""
+    plan = plan_attempt(4, PACK, MISSING_HEADING_REPORT, ["w"], ["yield_g_L"], model="a")
+
+    assert plan.strategy == "sections"
+    assert plan.by_section
+    assert plan.model == "a"
+
+
+def test_a_persistent_failure_switches_model_when_one_is_offered():
+    """Two models fail differently, which is the point of switching."""
+    plan = plan_attempt(
+        5, PACK, MISSING_HEADING_REPORT, ["w"], ["yield_g_L"],
+        model="a", fallback_models=["b"],
+    )
+
+    assert plan.model == "b"
+    assert plan.by_section
+
+
+def test_without_a_fallback_the_ladder_stays_on_the_same_model():
+    plan = plan_attempt(5, PACK, MISSING_HEADING_REPORT, ["w"], ["yield_g_L"], model="a")
+
+    assert plan.model == "a"
+
+
+def test_section_generation_writes_the_headings_itself():
+    """The rung that cannot omit a section: this function supplies the headings."""
+    from analysis.narrative_loop import generate_by_section
+
+    def generate(**kwargs):
+        return ["Body text for whichever section was asked for.\n"]
+
+    text = generate_by_section(PACK, "test", None, generate, ["yield_g_L"])
+
+    assert missing_headings(text) == []
+
+
+def test_the_driver_section_prompt_names_every_outcome():
+    """ministral left moisture out of every mock-spec report; this is the fix."""
+    from analysis.narrative_loop import DRIVER_SECTION_HEADING, build_section_messages
+
+    messages = build_section_messages(PACK, DRIVER_SECTION_HEADING, ["yield_g_L", "moisture_percent"])
+
+    assert "moisture_percent" in messages[-1]["content"]
 
 
 def test_the_attempt_log_stays_in_the_order_it_ran():

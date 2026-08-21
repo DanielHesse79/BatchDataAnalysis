@@ -48,6 +48,11 @@ REPAIR_TEMPERATURE = 0.0
 # The skeleton rung asks for every section in one pass, so it needs more room
 # than a normal reply.
 SKELETON_TOKEN_BUDGET = int(RESPONSE_TOKEN_BUDGET * 1.5)
+# One section needs far less room than a whole report.
+SECTION_TOKEN_BUDGET = max(512, RESPONSE_TOKEN_BUDGET // 4)
+# Where per-outcome discussion belongs, and so where a coverage failure
+# has to be corrected.
+DRIVER_SECTION_HEADING = "## Top Drivers by Outcome"
 
 
 @dataclass(frozen=True)
@@ -58,6 +63,18 @@ class Attempt:
     text: str
     warnings: list[str]
     seconds: float
+    model: str = ""
+
+
+@dataclass(frozen=True)
+class AttemptPlan:
+    """What the next rung should do, decided before anything is generated."""
+
+    strategy: str
+    model: str
+    messages: list[dict[str, str]] | None = None
+    overrides: dict[str, Any] | None = None
+    by_section: bool = False
 
 
 @dataclass
@@ -165,8 +182,9 @@ def generate_validated_report(
     report_pack: dict[str, Any],
     model: str,
     base_url: str | None = None,
-    max_attempts: int = 3,
+    max_attempts: int = 5,
     generate: Callable[..., Iterable[str]] | None = None,
+    fallback_models: list[str] | None = None,
 ) -> LoopResult:
     """Generate a report, repairing it until the validator is satisfied.
 
@@ -181,28 +199,34 @@ def generate_validated_report(
 
     for attempt_number in range(1, max(1, max_attempts) + 1):
         warnings_so_far = attempts[-1].warnings if attempts else []
-        strategy, messages, overrides = plan_attempt(
+        plan = plan_attempt(
             attempt_number, summary, previous_text, warnings_so_far, outcomes,
+            model=model, fallback_models=fallback_models,
         )
 
         started = time.monotonic()
         try:
-            text = sanitize_interpretation_text(
-                "".join(
-                    stream(
-                        profile_result=None,
-                        audit_result=None,
-                        analysis_results={},
-                        merged_dataframe=None,
-                        outcomes=outcomes,
-                        model=model,
-                        base_url=base_url,
-                        report_pack=summary,
-                        messages=messages,
-                        option_overrides=overrides,
+            if plan.by_section:
+                text = generate_by_section(
+                    summary, plan.model, base_url, stream, outcomes,
+                )
+            else:
+                text = sanitize_interpretation_text(
+                    "".join(
+                        stream(
+                            profile_result=None,
+                            audit_result=None,
+                            analysis_results={},
+                            merged_dataframe=None,
+                            outcomes=outcomes,
+                            model=plan.model,
+                            base_url=base_url,
+                            report_pack=summary,
+                            messages=plan.messages,
+                            option_overrides=plan.overrides,
+                        )
                     )
                 )
-            )
         except OllamaInterpreterError:
             # The first rung failing means Ollama is unreachable or the model
             # wrote nothing; there is nothing to repair, so let the caller see it.
@@ -212,7 +236,7 @@ def generate_validated_report(
 
         elapsed = time.monotonic() - started
         warnings = validate_interpretation_text(text, summary).warnings
-        attempts.append(Attempt(strategy, text, warnings, elapsed))
+        attempts.append(Attempt(plan.strategy, text, warnings, elapsed, plan.model))
 
         if not warnings:
             break
@@ -251,31 +275,119 @@ def replaying_generator(first_text: str, generate: Callable[..., Iterable[str]] 
     return generate_or_replay
 
 
+def build_section_messages(
+    summary: dict[str, Any], heading: str, outcomes: list[str],
+) -> list[dict[str, str]]:
+    """Ask for the body of one section and nothing else."""
+    requirement = ""
+    if heading == DRIVER_SECTION_HEADING and outcomes:
+        # The rung exists because asking for coverage in a whole-report prompt
+        # did not work: ministral-3:14b left moisture_percent out of every
+        # mock-spec report even when the skeleton named it. A section devoted to
+        # the outcomes is a narrower instruction to disobey.
+        requirement = (
+            " Discuss each of these outcomes by name, even if only to say that "
+            "nothing stood out for it: " + ", ".join(outcomes) + "."
+        )
+
+    return build_ollama_messages(summary) + [
+        {
+            "role": "user",
+            "content": (
+                f"Write only the content that belongs under the heading "
+                f"'{heading}'. Do not repeat the heading itself and do not write "
+                f"any other section.{requirement}"
+            ),
+        },
+    ]
+
+
+def generate_by_section(
+    summary: dict[str, Any],
+    model: str,
+    base_url: str | None,
+    stream: Callable[..., Iterable[str]],
+    outcomes: list[str],
+) -> str:
+    """Build the report one section at a time and assemble it here.
+
+    The most expensive rung, and the only one that cannot omit a section: the
+    headings are written by this function, not by the model. Reached only when
+    the skeleton has already failed twice.
+    """
+    parts = []
+    for heading in REQUIRED_HEADINGS:
+        body = sanitize_interpretation_text(
+            "".join(
+                stream(
+                    profile_result=None,
+                    audit_result=None,
+                    analysis_results={},
+                    merged_dataframe=None,
+                    outcomes=outcomes,
+                    model=model,
+                    base_url=base_url,
+                    report_pack=summary,
+                    messages=build_section_messages(summary, heading, outcomes),
+                    option_overrides={
+                        "temperature": REPAIR_TEMPERATURE,
+                        "num_predict": SECTION_TOKEN_BUDGET,
+                    },
+                )
+            )
+        )
+        # A model asked for a section sometimes writes the heading anyway.
+        if body.startswith(heading):
+            body = body[len(heading):].lstrip()
+        parts.append(f"{heading}\n{body.strip()}\n")
+
+    return "\n".join(parts)
+
+
 def plan_attempt(
     attempt_number: int,
     summary: dict[str, Any],
     previous_text: str,
     warnings: list[str],
     outcomes: list[str],
-) -> tuple[str, list[dict[str, str]] | None, dict[str, Any] | None]:
+    model: str = "",
+    fallback_models: list[str] | None = None,
+) -> AttemptPlan:
     """Choose the rung for this attempt.
 
-    Returning ``None`` messages means the standard prompt, which keeps the first
+    ``messages`` of ``None`` means the standard prompt, which keeps the first
     attempt byte-for-byte identical to what the app sent before this loop
     existed.
     """
     if attempt_number == 1 or not previous_text:
-        return "base", None, None
+        return AttemptPlan("base", model)
 
     # A missing heading is structural: feeding the text back rarely fixes it,
     # while handing over the skeleton does. Go there directly rather than
     # spending a rung on a repair that is unlikely to work.
     if attempt_number == 2 and not missing_headings(previous_text):
-        return "repair", build_repair_messages(summary, previous_text, warnings), {
-            "temperature": REPAIR_TEMPERATURE,
-        }
+        return AttemptPlan(
+            "repair", model,
+            build_repair_messages(summary, previous_text, warnings),
+            {"temperature": REPAIR_TEMPERATURE},
+        )
 
-    return "skeleton", build_skeleton_messages(summary, warnings, outcomes), {
-        "temperature": REPAIR_TEMPERATURE,
-        "num_predict": SKELETON_TOKEN_BUDGET,
-    }
+    if attempt_number <= 3:
+        return AttemptPlan(
+            "skeleton", model,
+            build_skeleton_messages(summary, warnings, outcomes),
+            {"temperature": REPAIR_TEMPERATURE, "num_predict": SKELETON_TOKEN_BUDGET},
+        )
+
+    # Past this point the model has failed the same checks three times. Another
+    # attempt with the same model and a stricter prompt is unlikely to differ,
+    # so switch model if one was offered. Measured failures are complementary:
+    # gpt-oss:20b never dropped an outcome but omitted headings, gemma4:e4b did
+    # the reverse. A second model is a second set of blind spots, not a better
+    # one.
+    alternates = fallback_models or []
+    if attempt_number >= 5 and alternates:
+        chosen = alternates[(attempt_number - 5) % len(alternates)]
+        return AttemptPlan("sections", chosen, by_section=True)
+
+    return AttemptPlan("sections", model, by_section=True)
