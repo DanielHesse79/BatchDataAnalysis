@@ -6,6 +6,8 @@ from dataclasses import dataclass
 import re
 from typing import Any
 
+from analysis.evidence import tokenize_outcome_name
+
 
 REQUIRED_HEADINGS = [
     "## Executive Summary",
@@ -76,6 +78,9 @@ def validate_interpretation_text(
     warnings.extend(check_unknown_variables(report_text, report_pack))
     warnings.extend(check_mislabeled_categorical_levels(report_text, report_pack))
     warnings.extend(check_spec_limit_mentions(report_text, report_pack))
+    warnings.extend(check_empty_sections(report_text))
+    warnings.extend(check_outcome_coverage(report_text, report_pack))
+    warnings.extend(check_numbers_exist_in_pack(report_text, report_pack))
 
     return ReportValidationResult(warnings=dedupe_preserve_order(warnings))
 
@@ -197,6 +202,181 @@ def check_mislabeled_categorical_levels(report_text: str, report_pack: dict[str,
         )
 
     return warnings
+
+
+# --------------------------------------------------------------- numeric grounding
+# Python computes the facts and the model narrates them, so every number in the
+# narrative should be traceable to the evidence pack. Enforcing that is the
+# strictest check available and the one that catches the most dangerous failure:
+# a fabricated statistic reads exactly like a real one.
+#
+# It is deliberately conservative. A check that cries wolf gets ignored, and the
+# categorical check already taught that lesson - it fired on `Q2=0` for a year.
+# Numbers below this threshold are ordinals, list markers and counts ("the top 3
+# drivers"), not statistics.
+# Tokens that describe a unit or a measure rather than what was measured. An
+# outcome recognised only by these has not really been mentioned.
+GENERIC_NAME_TOKENS = {
+    "percent", "pct", "ppm", "ppb", "index", "value", "ratio", "per", "mean",
+    "avg", "average", "total", "count", "level", "score", "g", "l", "ml", "mg",
+    "kg", "h", "hr", "hrs", "c", "k", "min", "sec", "unit", "units",
+}
+
+SMALLEST_CHECKED_NUMBER = 10.0
+NUMBER_IN_TEXT = re.compile(r"(?<![A-Za-z0-9_.-])(-?\d+(?:\.\d+)?)(?![A-Za-z0-9_-])")
+MAX_REPORTED_NUMBERS_LISTED = 6
+# A section shorter than this is empty in substance whatever its heading says.
+# Kept low on purpose: a terse but real section - "No spec/window file was
+# supplied." - is legitimate, and the check exists to catch nothing at all, not
+# brevity. It fires on none of the 48 benchmarked reports.
+MINIMUM_SECTION_CHARACTERS = 25
+
+
+def collect_pack_numbers(value: Any, found: set[float] | None = None) -> set[float]:
+    """Every number anywhere in the evidence pack, including inside strings."""
+    if found is None:
+        found = set()
+
+    if isinstance(value, bool):
+        return found
+    if isinstance(value, (int, float)):
+        found.add(float(value))
+    elif isinstance(value, str):
+        for match in NUMBER_IN_TEXT.finditer(value):
+            found.add(float(match.group(1)))
+    elif isinstance(value, dict):
+        for item in value.values():
+            collect_pack_numbers(item, found)
+    elif isinstance(value, (list, tuple)):
+        for item in value:
+            collect_pack_numbers(item, found)
+
+    return found
+
+
+def number_is_grounded(reported: float, pack_numbers: set[float], decimals: int) -> bool:
+    """Whether a reported number matches something the pack actually contains.
+
+    A pack value counts as a match when rounding it to the precision the report
+    used produces the reported number - which is how a person writes 8.15 as
+    8.2. Percentages are checked in both directions because a pack may hold a
+    fraction where the report writes a percent.
+    """
+    for candidate in (reported, reported / 100.0, reported * 100.0):
+        for pack_number in pack_numbers:
+            if round(pack_number, decimals) == round(candidate, decimals):
+                return True
+            if abs(pack_number) > 1e-9 and abs(pack_number - candidate) / abs(pack_number) < 0.005:
+                return True
+    return False
+
+
+def check_numbers_exist_in_pack(report_text: str, report_pack: dict[str, Any]) -> list[str]:
+    """Warn when the report states a number the evidence pack does not contain."""
+    if not report_pack:
+        return []
+
+    pack_numbers = collect_pack_numbers(report_pack)
+    if not pack_numbers:
+        return []
+
+    # Level names such as BR-3 and RM-005 carry digits that are not statistics;
+    # the categorical check owns those.
+    level_text = " ".join(
+        str(level)
+        for levels in report_pack.get("allowed_variables", {}).get("categorical_levels", {}).values()
+        for level in levels
+    )
+    level_numbers = collect_pack_numbers(level_text)
+
+    ungrounded: list[str] = []
+    for match in NUMBER_IN_TEXT.finditer(report_text):
+        literal = match.group(1)
+        reported = float(literal)
+        if abs(reported) < SMALLEST_CHECKED_NUMBER:
+            continue
+        if reported in level_numbers:
+            continue
+
+        decimals = len(literal.split(".")[1]) if "." in literal else 0
+        if not number_is_grounded(reported, pack_numbers, decimals):
+            if literal not in ungrounded:
+                ungrounded.append(literal)
+
+    if not ungrounded:
+        return []
+
+    listed = ", ".join(ungrounded[:MAX_REPORTED_NUMBERS_LISTED])
+    suffix = " and others" if len(ungrounded) > MAX_REPORTED_NUMBERS_LISTED else ""
+    return [
+        f"The report states {len(ungrounded)} number(s) that are not in the evidence "
+        f"pack: {listed}{suffix}. Every figure should come from the analysis, not "
+        "from the model."
+    ]
+
+
+def check_empty_sections(report_text: str) -> list[str]:
+    """Warn when a required heading has nothing of substance under it.
+
+    Without this, the cheapest way to satisfy check_required_headings is to emit
+    the headings and write nothing - which matters as soon as a repair loop is
+    optimising against these checks.
+    """
+    warnings = []
+    for heading in REQUIRED_HEADINGS:
+        position = report_text.find(heading)
+        if position < 0:
+            continue  # check_required_headings reports it as missing
+
+        body_start = position + len(heading)
+        next_positions = [
+            report_text.find(other, body_start)
+            for other in REQUIRED_HEADINGS
+            if report_text.find(other, body_start) > -1
+        ]
+        body_end = min(next_positions) if next_positions else len(report_text)
+        body = report_text[body_start:body_end].strip()
+
+        if len(body) < MINIMUM_SECTION_CHARACTERS:
+            warnings.append(
+                f"Section '{heading.lstrip('# ').strip()}' has a heading but no "
+                "content under it."
+            )
+
+    return warnings
+
+
+def check_outcome_coverage(report_text: str, report_pack: dict[str, Any]) -> list[str]:
+    """Warn when an analysed outcome is never discussed.
+
+    Matched on distinctive tokens rather than the exact column name. A readable
+    report writes "host cell protein (HCP) ppm", not `hcp_ppm`, and demanding the
+    literal name would flag almost every well-written report - measured at 40 of
+    48 on the model benchmark before this was loosened.
+    """
+    outcomes = report_pack.get("allowed_variables", {}).get("outcome_columns", [])
+    if not outcomes:
+        return []
+
+    lowercase_report = report_text.lower()
+    missing = []
+    for outcome in outcomes:
+        distinctive = [
+            token for token in tokenize_outcome_name(outcome)
+            if token not in GENERIC_NAME_TOKENS and len(token) > 1
+        ]
+        if not distinctive:
+            continue  # nothing to look for but units
+        if not any(token in lowercase_report for token in distinctive):
+            missing.append(str(outcome))
+
+    if not missing:
+        return []
+
+    return [
+        "The report never discusses " + ", ".join(missing[:6])
+        + ". Every analysed outcome should appear."
+    ]
 
 
 def check_spec_limit_mentions(report_text: str, report_pack: dict[str, Any]) -> list[str]:
