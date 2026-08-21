@@ -442,19 +442,26 @@ one triggers further generation.
 
 ### What it is worth
 
-Measured on both synthetic datasets, two runs per model:
+Measured on both synthetic datasets, two runs per model, all on the same code:
 
-| Model | Clean reports without the loop | With it |
-|---|---|---|
-| `qwen3.5:9b` | 0 of 4 | **4 of 4** |
-| `gpt-oss:20b` | 0 of 6 | **4 of 4** |
-| `ministral-3:14b` | 4 of 6 | **4 of 4** |
+| Model | Clean without the loop | With it | Rungs needed | Time |
+|---|---|---|---|---|
+| `gemma4:e4b` | 5 of 6 | **4 of 4** | 1.5 | 35 s |
+| `gemma4:12b` | 4 of 6 | **4 of 4** | 1.8 | 46 s |
+| `ministral-3:14b` | 4 of 6 | **4 of 4** | 3.5 | 121 s |
+| `qwen3.5:9b` | 0 of 6 | **4 of 4** | 3.5 | 138 s |
+| `gpt-oss:20b` | 0 of 6 | **4 of 4** | 4.0 | 144 s |
 
-The loop costs two to four minutes when it has to escalate, against twenty to
-forty seconds for a first attempt that passes. It changes which models are
-usable more than it changes the best one: `gemma4:e4b` remains the
-recommendation because it needs the fewest rungs, not because the others cannot
-get there.
+Every model reaches a clean report with the loop. What separates them is how
+much help they need, which is why `gemma4:e4b` is the recommendation: not
+because the others cannot get there, but because it is usually already right.
+
+**The loop repairs a blind spot rather than removing it.** `gemma4:e4b` fails
+outcome coverage on the mock-spec dataset at the first attempt every time - it
+never mentions `moisture_percent` - and the `repair` rung fixes it in one extra
+call. With the repair turned off, that report would go out silently missing one
+of the four outcomes you selected. A missing heading is visible; a missing
+outcome is not, which is why the check exists.
 
 ## 17. Interpreting Results Safely
 
