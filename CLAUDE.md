@@ -72,8 +72,9 @@ The pipeline is staged: intake → normalization → aggregation → readiness/m
 - **key_findings.py** — Python-generated source-of-truth findings shown **before** the LLM narrative.
 - **confidence.py** — explains the practical confidence label per ranked driver (method agreement, validation, n, missingness, audit cautions).
 - **method_registry.py** — short explanations of what each method can/cannot prove. The UI uses this to set expectations.
-- **interpreter.py** — streams an Ollama interpretation from the evidence pack. Handles cloud-model shortcuts and output cleanup.
-- **report_validator.py** — heuristic checks on LLM output: assumed specs, unknown variables, categorical level mix-ups, overly causal/action-directive wording.
+- **interpreter.py** — streams an Ollama interpretation from the evidence pack. Handles cloud-model shortcuts and output cleanup. Sends Ollama's `think: false` flag and retries without it for models that have no thinking mode: the `/no_think` prompt directive alone is not enough, and qwen3.5 spends the whole generation budget reasoning without the flag.
+- **report_validator.py** — deterministic checks on LLM output: required and empty sections, outcome coverage, **every number traceable to the evidence pack**, unknown variables, categorical level mix-ups, assumed specs, overly causal/action-directive wording. No model is involved; each check is unit-tested.
+- **narrative_loop.py** — generate, check, repair. Escalates `base` -> `repair` -> `skeleton` -> `sections` -> `sections on another model`, stopping as soon as the validator is satisfied. A failed result is returned with its warnings attached, never presented as clean. See `docs/USER_GUIDE.md` section 16.
 
 ### `ui/` modules (view layer only — no analysis logic)
 

@@ -136,6 +136,8 @@ Recommended local models for this app, measured rather than assumed (see
 `qwen3.5:9b` and `gpt-oss:20b` are not recommended: both omit required section
 headings. Leave model thinking off.
 
+Every generated report is checked deterministically before it is shown, and the app re-asks the model to correct what the checks caught. That lifts the weaker models to clean reports too, at the cost of a few minutes; see `docs/USER_GUIDE.md` section 16.
+
 The app also includes `nemotron-3-super:cloud` as a selectable shortcut. Cloud
 models may route the analysis summary through Ollama Cloud, so only use them for
 data you are comfortable sending outside the machine.

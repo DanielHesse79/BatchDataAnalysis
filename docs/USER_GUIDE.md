@@ -383,7 +383,80 @@ If a model repeats itself, leaks thinking text, or invents file paths, regenerat
 with a different model. The app includes stop tokens and output cleanup, but
 local models can still behave unevenly.
 
-## 16. Interpreting Results Safely
+## 16. How The Report Is Checked And Repaired
+
+Every generated narrative is checked by `analysis/report_validator.py` before you
+see it. The checks are deterministic Python, not a second model: the same report
+always produces the same verdict, and each check is unit-tested.
+
+What is checked:
+
+| Check | Catches |
+|---|---|
+| Required headings | A section the model skipped |
+| Empty sections | A heading with nothing under it |
+| Outcome coverage | An analysed outcome the report never discusses |
+| Numbers in the pack | A figure that is not in the evidence pack |
+| Unknown variables | A column name the analysis never produced |
+| Categorical levels | A level attached to the wrong variable |
+| Assumed specs | Invented "typical" limits when no spec file was supplied |
+| Causal wording | Claims of causation, or instructions to change a setpoint |
+
+**Numbers in the pack** is the strictest of these and the reason for the rest.
+Python computes the facts and the model narrates them, so a figure the analysis
+never produced is a fabrication however plausible it reads.
+
+### The repair loop
+
+When a check fails and **Repair the report if the checks fail** is ticked, the
+app does not simply hand you the warnings. It tells the model what failed and
+asks again, escalating only as far as it has to:
+
+| Rung | What changes |
+|---|---|
+| `base` | The normal prompt. Most reports stop here. |
+| `repair` | The failed checks fed back with the previous report |
+| `skeleton` | The required headings supplied pre-filled, plus any outcome that was left out |
+| `sections` | One section requested at a time, with the headings written by the app |
+| `sections` on another model | The same, on a different local model |
+
+A missing heading skips `repair` and goes straight to `skeleton`: feeding the
+text back rarely restores structure, while handing the structure over does.
+Retries run at temperature 0, so a repair is a correction rather than another
+roll of the dice.
+
+The line under the report says what happened, for example:
+
+> Passed every check after base then repair then skeleton (126s).
+
+**A failed report is never presented as clean.** If the ladder is exhausted, the
+attempt with the fewest warnings is shown, its warnings are still listed, and
+the line says so:
+
+> Tried base then skeleton then sections (168s) and 1 check(s) still fail. The
+> report below is the best attempt, not a clean one.
+
+Turn the repair off if you would rather see the first attempt and its warnings
+without waiting. A clean first attempt costs nothing either way; only a failed
+one triggers further generation.
+
+### What it is worth
+
+Measured on both synthetic datasets, two runs per model:
+
+| Model | Clean reports without the loop | With it |
+|---|---|---|
+| `qwen3.5:9b` | 0 of 4 | **4 of 4** |
+| `gpt-oss:20b` | 0 of 6 | **4 of 4** |
+| `ministral-3:14b` | 4 of 6 | **4 of 4** |
+
+The loop costs two to four minutes when it has to escalate, against twenty to
+forty seconds for a first attempt that passes. It changes which models are
+usable more than it changes the best one: `gemma4:e4b` remains the
+recommendation because it needs the fewest rungs, not because the others cannot
+get there.
+
+## 17. Interpreting Results Safely
 
 Use this checklist:
 
@@ -395,7 +468,7 @@ Use this checklist:
 - Would a designed experiment or confirmation run be needed before action?
 - If specs were uploaded, does the data actually cover the full allowed range?
 
-## 17. Synthetic Data Walkthrough
+## 18. Synthetic Data Walkthrough
 
 Use the included files:
 
@@ -433,7 +506,7 @@ Expected high-level findings:
 - Aggregate: pH should show a U-shaped pattern.
 - Bioreactor: BR-3 should show lower yield.
 
-## 18. Mock Spec Data Walkthrough
+## 19. Mock Spec Data Walkthrough
 
 For testing the Specs & Margins feature more directly, use:
 
@@ -472,7 +545,7 @@ Expected high-level spec stories:
 - `reactor_id == RX-3` has lower yield and should be interpreted as an equipment
   pattern, not a numeric spec-window issue.
 
-## 19. Messy Field Data Walkthrough
+## 20. Messy Field Data Walkthrough
 
 For testing intake robustness, run:
 
