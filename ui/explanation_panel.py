@@ -12,6 +12,7 @@ from analysis.interpreter import (
     sanitize_interpretation_text,
     stream_interpretation,
 )
+from analysis.narrative_loop import generate_validated_report, replaying_generator
 from analysis.report_validator import validate_interpretation_text
 from utils.format import datetime_stamp_for_filename
 from utils.report import (
@@ -158,6 +159,16 @@ def render_explanation_controls(
             "Use this only with data you are comfortable sending outside this machine."
         )
 
+    repair_enabled = st.checkbox(
+        "Repair the report if the checks fail",
+        value=True,
+        key="repair_interpretation",
+        help=(
+            "Re-asks the model to correct what the checks caught, up to twice. "
+            "A report that still fails is shown with its warnings, never as clean."
+        ),
+    )
+
     generate_clicked = st.button(
         "Generate interpretation",
         type="primary",
@@ -211,14 +222,27 @@ def render_explanation_controls(
         interpretation_text = "".join(streamed_chunks)
 
         if interpretation_text:
-            st.session_state["ollama_interpretation"] = sanitize_interpretation_text(
-                interpretation_text
-            )
-            validation_result = validate_interpretation_text(
-                st.session_state["ollama_interpretation"],
-                report_pack,
-            )
-            st.session_state["interpretation_validation_warnings"] = validation_result.warnings
+            narrative = sanitize_interpretation_text(interpretation_text)
+            warnings = validate_interpretation_text(narrative, report_pack).warnings
+
+            # The streamed report is handed to the loop as its first attempt, so
+            # a repair costs only the attempts it actually needs.
+            if warnings and repair_enabled:
+                with st.spinner("Checks failed. Asking the model to correct it..."):
+                    loop_result = generate_validated_report(
+                        report_pack,
+                        model=selected_model,
+                        base_url=base_url,
+                        generate=replaying_generator(narrative),
+                    )
+                narrative = loop_result.text or narrative
+                warnings = loop_result.warnings
+                st.session_state["interpretation_repair_note"] = loop_result.describe()
+            else:
+                st.session_state["interpretation_repair_note"] = ""
+
+            st.session_state["ollama_interpretation"] = narrative
+            st.session_state["interpretation_validation_warnings"] = warnings
             st.session_state["pdf_report_bytes"] = None
             stream_placeholder.empty()
             # The PDF section outside this fragment reads the stored narrative.
@@ -227,6 +251,9 @@ def render_explanation_controls(
         stream_placeholder.empty()
 
     if st.session_state.get("ollama_interpretation"):
+        repair_note = st.session_state.get("interpretation_repair_note")
+        if repair_note:
+            st.caption(repair_note)
         st.markdown(st.session_state["ollama_interpretation"])
 
         render_interpretation_validation_warnings()

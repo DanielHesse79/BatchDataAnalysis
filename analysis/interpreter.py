@@ -318,25 +318,35 @@ def stream_interpretation(
     base_url: str | None = None,
     spec_assessment=None,
     report_pack: dict[str, Any] | None = None,
+    messages: list[dict[str, str]] | None = None,
+    option_overrides: dict[str, Any] | None = None,
 ) -> Iterable[str]:
     """Stream markdown interpretation chunks from Ollama.
 
     Pass an already-built ``report_pack`` to reuse the pack the UI has shown the
     user, instead of rebuilding it for the prompt.
-    """
-    summary = report_pack
-    if summary is None:
-        summary = build_interpretation_summary(
-            profile_result=profile_result,
-            audit_result=audit_result,
-            analysis_results=analysis_results,
-            merged_dataframe=merged_dataframe,
-            outcomes=outcomes,
-            spec_assessment=spec_assessment,
-        )
 
-    summary = fit_summary_to_context(summary)
-    messages = build_ollama_messages(summary)
+    Pass ``messages`` to send a prompt this module did not build. The repair loop
+    in ``narrative_loop`` uses it to ask for a corrected report without
+    duplicating the streaming, stop-marker and empty-response handling below.
+    ``option_overrides`` adjusts generation settings for the same reason: a
+    retry runs at temperature 0 so a repair is reproducible rather than a
+    fresh roll.
+    """
+    if messages is None:
+        summary = report_pack
+        if summary is None:
+            summary = build_interpretation_summary(
+                profile_result=profile_result,
+                audit_result=audit_result,
+                analysis_results=analysis_results,
+                merged_dataframe=merged_dataframe,
+                outcomes=outcomes,
+                spec_assessment=spec_assessment,
+            )
+        summary = fit_summary_to_context(summary)
+        messages = build_ollama_messages(summary)
+
     base_url = (base_url or get_ollama_base_url()).rstrip("/")
 
     request_payload = {
@@ -350,6 +360,7 @@ def stream_interpretation(
             "repeat_penalty": 1.15,
             "repeat_last_n": 256,
             "stop": list(OLLAMA_STOP_MARKERS),
+            **(option_overrides or {}),
         },
     }
 
