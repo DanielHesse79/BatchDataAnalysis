@@ -97,8 +97,9 @@ if ($check.ExitCode -ne 0) {
 Write-Host "    every shipped module imports" -ForegroundColor Green
 
 Write-Step "Adding the launcher shortcuts"
-# Two small wrappers so users pick an application without a command line.
+# A shared chooser plus two direct-entry wrappers for frequent users.
 @(
+    @{ File = "Open Batch Insight.cmd";      App = "home" },
     @{ File = "Batch Insight Analyzer.cmd"; App = "batch" },
     @{ File = "QC Intelligence Layer.cmd";  App = "qc" }
 ) | ForEach-Object {
@@ -111,8 +112,9 @@ Set-Content -Path (Join-Path $BundleDir "READ ME FIRST.txt") -Encoding UTF8 -Val
 Batch Insight
 =============
 
-Double-click one of these to start:
+Double-click Open Batch Insight.cmd to choose a workspace, or use a direct shortcut:
 
+    Open Batch Insight.cmd          Choose between both analysis workspaces
     Batch Insight Analyzer.cmd     Link batch process parameters to QC outcomes
     QC Intelligence Layer.cmd      Trend QC drift across runs and instruments
 

@@ -3,8 +3,9 @@
 ## For a user
 
 Copy the project folder to the machine, open `packaging`, and double-click
-**`Install.cmd`**. Pick an option, wait, done. Shortcuts for both applications
-appear on the Desktop and in the Start Menu, and each opens in its own window.
+**`Install.cmd`**. Pick an option, wait, done. The **Batch Insight** shortcut
+opens a shared workspace chooser. Direct shortcuts for both analysis workspaces
+also appear on the Desktop and in the Start Menu.
 
 Everything is per-user: nothing is written to Program Files, no service is
 registered, and no administrator rights are needed. That matters on managed
@@ -17,7 +18,7 @@ clearly and stops if it cannot find one.
 
 | Option | Installs | Extra size |
 |---|---|---|
-| 1 Standard | Both apps and the desktop window | about 1 GB |
+| 1 Standard | Shared chooser, both workspaces and the desktop window | about 1 GB |
 | 2 With optional models | Plus CatBoost, XGBoost, SHAP | about 500 MB more |
 | 3 Developer | Plus pytest | small |
 
@@ -54,6 +55,7 @@ If pywebview is missing the launcher falls back to the default browser rather
 than failing, so a partial install still works.
 
 ```powershell
+.\.venv\Scripts\python.exe launcher.py
 .\.venv\Scripts\python.exe launcher.py --app batch
 .\.venv\Scripts\python.exe launcher.py --app qc
 .\.venv\Scripts\python.exe launcher.py --app qc --browser   # force a browser
@@ -69,9 +71,9 @@ not developers, build the self-contained bundle instead:
 ```
 
 That produces `dist\BatchInsight\` holding `BatchInsight.exe` and everything it
-needs. Users copy the folder, double-click **Batch Insight Analyzer.cmd** or
-**QC Intelligence Layer.cmd**, and the app opens in its own window. No Python,
-no pip, no administrator rights, nothing to configure.
+needs. Users copy the folder and double-click **Open Batch Insight.cmd** to
+choose a workspace. The two direct-entry command files remain available. No
+Python, no pip, no administrator rights, nothing to configure.
 
 The build is a developer step. Users never run it.
 
@@ -85,7 +87,7 @@ enough: configuration is resolved before the environment is consulted, so the
 server has to be configured through `load_config_options`, exactly as
 Streamlit's CLI does it.
 
-Streamlit also executes the app as a *script*, so `app.py`, `qc_intel/app.py`
+Streamlit also executes the app as a *script*, so `home.py`, `app.py`, `qc_intel/app.py`
 and every package they import are shipped as real files inside the bundle
 rather than only as frozen bytecode.
 

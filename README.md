@@ -1,17 +1,25 @@
-# Batch Insight Analyzer
+# Batch Insight
 
-Batch Insight Analyzer is a local Streamlit application for linking batch process
-parameters to QC outcomes. It is designed for bioprocess and life-science
-manufacturing teams that have historical batch data, but may not have a
-statistician or data scientist available.
+Batch Insight is a local analysis suite for life-science manufacturing and QC
+teams. A shared start page routes users into two deliberately separate
+workspaces, because they answer different questions and use different data
+structures.
 
-The app lets a user upload a batch process file and a QC results file, match the
-files by batch ID, profile the merged data, run several complementary analysis
-methods, and generate a plain-language interpretation through Ollama.
+## Choose The Right Workspace
 
-## Current Status
+| Workspace | Question | Typical input | Main output |
+|---|---|---|---|
+| **Batch Insight Analyzer** | Which process conditions are associated with QC outcomes? | One row per manufacturing batch, joined to QC results | Ranked process drivers, response shapes, specs/windows, interpretation and PDF |
+| **QC Intelligence Layer** | Is an analytical method or instrument quietly changing over time? | Run-level QC metadata across methods, instruments and months | Control charts, drift/step/variance findings, instrument comparisons and provenance |
 
-This repository contains the working foundation through local interpretation:
+The workspaces share a launcher and installation bundle, but keep separate
+analysis pipelines. Batch driver analysis is cross-sectional and uses PCA, PLS
+and tree models. QC monitoring is longitudinal, deterministic, and deliberately
+uses neither machine learning nor generative AI.
+
+## Batch Insight Analyzer Capabilities
+
+The batch-driver workspace provides:
 
 - Synthetic validation data generator.
 - CSV, XLSX, and XLS upload.
@@ -37,6 +45,21 @@ This repository contains the working foundation through local interpretation:
 - Local or Ollama Cloud interpretation.
 - PDF report export with summary tables, driver charts, PCA overview, specs, and appendix.
 - Streamlit UI polish and theme.
+
+## QC Intelligence Layer Capabilities
+
+The QC-monitoring workspace provides:
+
+- CSV, TSV, XLSX and XLS intake with proposed table and column mappings.
+- Personal-data screening before mapped records enter the database.
+- Run-ordered control charts with fixed acceptance limits and frozen baselines.
+- Deterministic gradual-drift, step-change and variance-increase detection.
+- Method, instrument and QC-level comparisons ranked by effect size.
+- Source-file, ingest and row-level provenance.
+- A local SQLite store with checksummed, duplicate-safe ingestion.
+
+See [qc_intel/README.md](qc_intel/README.md) for its scope, statistical choices
+and data model.
 
 ## What The App Is For
 
@@ -64,20 +87,24 @@ python -m venv .venv
 .\.venv\Scripts\activate
 pip install -r requirements.txt
 python generate_synthetic_data.py
-streamlit run app.py
+python launcher.py
 ```
 
-Then open:
+The launcher opens a start page where you can choose either workspace and switch
+between them from the top navigation. If the desktop window dependency is not
+installed, it falls back to the default browser.
 
-```text
-http://localhost:8501
-```
-
-If Streamlit is already installed in the local virtual environment, this also
-works:
+To run the shared Streamlit entry point directly:
 
 ```powershell
-.\.venv\Scripts\python.exe -m streamlit run app.py --server.port 8501
+streamlit run home.py
+```
+
+Direct entry points remain available for frequent users and automation:
+
+```powershell
+.\.venv\Scripts\python.exe launcher.py --app batch
+.\.venv\Scripts\python.exe launcher.py --app qc
 ```
 
 Run the automated tests:
@@ -90,7 +117,7 @@ The test suite covers intake helpers, profiling/audit checks, specs/windows,
 deterministic evidence, confidence explanations, report validation, and recovery
 of the planted synthetic relationships.
 
-## Ollama Setup
+## Ollama Setup For Batch Driver Analysis
 
 The interpretation tab uses Ollama's chat API.
 
@@ -181,7 +208,16 @@ analysis does not recover these signals, the workflow needs attention.
 
 ```text
 batch-insight-analyzer/
+|-- home.py
+|-- launcher.py
 |-- app.py
+|-- qc_intel/
+|   |-- app.py
+|   |-- pipeline.py
+|   |-- detectors.py
+|   |-- db.py
+|   |-- ingest/
+|   `-- tests/
 |-- generate_synthetic_data.py
 |-- generate_mock_spec_data.py
 |-- generate_messy_field_data.py

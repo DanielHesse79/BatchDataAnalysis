@@ -11,6 +11,10 @@ different question. Batch Insight Analyzer asks *which process variables drive a
 QC outcome*, cross-sectionally, over a set of batches. This asks *is a stable
 analytical method quietly moving*, longitudinally, over a year.
 
+Both workspaces are available from the shared Batch Insight start page. The top
+navigation makes the separation explicit and lets a user switch without mixing
+their data pipelines or statistical claims.
+
 ## What it deliberately does not do
 
 - **It does not decide run acceptance.** UNIFI, MassLynx/QuanLynx and the LIMS
@@ -43,6 +47,9 @@ library plus pandas, NumPy, SciPy, Plotly and Streamlit, which the repository
 already pins.
 
 ```powershell
+# Shared start page
+.\.venv\Scripts\python.exe launcher.py
+
 # Generate synthetic data, ingest, analyse, print an alert digest
 .\.venv\Scripts\python.exe -m qc_intel.build_prototype
 

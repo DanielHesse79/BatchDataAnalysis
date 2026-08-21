@@ -18,7 +18,7 @@ $ProjectRoot = Split-Path -Parent $PSScriptRoot
 $startMenu = Join-Path $env:APPDATA "Microsoft\Windows\Start Menu\Programs\Batch Insight"
 $desktop = [Environment]::GetFolderPath("Desktop")
 
-foreach ($name in @("Batch Insight Analyzer", "QC Intelligence Layer")) {
+foreach ($name in @("Batch Insight", "Batch Insight Analyzer", "QC Intelligence Layer")) {
     foreach ($folder in @($startMenu, $desktop)) {
         $path = Join-Path $folder "$name.lnk"
         if (Test-Path $path) { Remove-Item $path -Force; Write-Host "Removed $path" }

@@ -186,6 +186,7 @@ if (-not $NoShortcuts) {
     New-Item -ItemType Directory -Force -Path $startMenu | Out-Null
 
     $shortcuts = @(
+        @{ Name = "Batch Insight";          App = "home";  Description = "Choose between batch driver analysis and QC monitoring" },
         @{ Name = "Batch Insight Analyzer"; App = "batch"; Description = "Link batch process parameters to QC outcomes" },
         @{ Name = "QC Intelligence Layer";  App = "qc";    Description = "Trend QC drift across runs, instruments and methods" }
     )

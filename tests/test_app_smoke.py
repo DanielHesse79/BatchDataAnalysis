@@ -14,6 +14,7 @@ from streamlit.testing.v1 import AppTest
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 APP_PATH = PROJECT_ROOT / "app.py"
+HOME_PATH = PROJECT_ROOT / "home.py"
 STARTUP_TIMEOUT_SECONDS = 60
 
 
@@ -22,6 +23,25 @@ def started_app() -> AppTest:
     app_test = AppTest.from_file(str(APP_PATH), default_timeout=STARTUP_TIMEOUT_SECONDS)
     app_test.run()
     return app_test
+
+
+@pytest.fixture(scope="module")
+def started_home() -> AppTest:
+    app_test = AppTest.from_file(str(HOME_PATH), default_timeout=STARTUP_TIMEOUT_SECONDS)
+    app_test.run()
+    return app_test
+
+
+def test_shared_workspace_chooser_runs_without_raising(started_home):
+    assert not started_home.exception
+
+
+def test_shared_workspace_chooser_exposes_both_analysis_paths(started_home):
+    headings = [element.value for element in started_home.subheader]
+    links = [element.label for element in started_home.get("page_link")]
+
+    assert headings == ["Batch Insight Analyzer", "QC Intelligence Layer"]
+    assert links == ["Open batch driver analysis", "Open QC monitoring"]
 
 
 def test_app_runs_without_raising(started_app):

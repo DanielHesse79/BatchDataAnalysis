@@ -31,6 +31,19 @@ def test_every_app_has_a_window_title():
         assert app["width"] > 0 and app["height"] > 0
 
 
+def test_launcher_defaults_to_the_shared_workspace_chooser(monkeypatch):
+    calls = []
+    monkeypatch.setattr(sys, "argv", ["launcher.py"])
+    monkeypatch.setattr(
+        launcher,
+        "run",
+        lambda app_key, force_browser: calls.append((app_key, force_browser)) or 0,
+    )
+
+    assert launcher.main() == 0
+    assert calls == [("home", False)]
+
+
 def test_find_free_port_returns_a_bindable_port():
     port = launcher.find_free_port()
 

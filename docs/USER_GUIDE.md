@@ -1,19 +1,25 @@
 # User Guide
 
-This guide walks through the normal app workflow.
+This guide walks through the Batch Insight Analyzer workflow. The suite also
+contains the separate QC Intelligence Layer for longitudinal analytical-method
+monitoring.
 
 ## 1. Start The App
 
-From the project root:
+From the project root, open the shared workspace chooser:
+
+```powershell
+.\.venv\Scripts\python.exe launcher.py
+```
+
+Choose **Batch drivers** for the workflow described below. **QC monitoring**
+opens the separate longitudinal dashboard. The top navigation remains available
+so you can switch workspace without restarting the suite.
+
+For a direct developer launch of this workspace:
 
 ```powershell
 .\.venv\Scripts\python.exe -m streamlit run app.py --server.port 8501
-```
-
-Open:
-
-```text
-http://localhost:8501
 ```
 
 ## 2. Upload Files

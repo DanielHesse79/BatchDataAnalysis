@@ -67,13 +67,6 @@ from ui.results_panel import (
 )
 
 
-st.set_page_config(
-    page_title="Batch Insight Analyzer",
-    page_icon="BIA",
-    layout="wide",
-)
-
-
 def main() -> None:
     apply_custom_theme()
 
@@ -446,4 +439,9 @@ def main() -> None:
 
 
 if __name__ == "__main__":
+    st.set_page_config(
+        page_title="Batch Insight Analyzer",
+        page_icon="BIA",
+        layout="wide",
+    )
     main()

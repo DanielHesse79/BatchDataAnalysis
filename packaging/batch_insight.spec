@@ -65,7 +65,7 @@ for package in ("analysis", "ui", "utils", "qc_intel"):
     hiddenimports += collect_submodules(package, filter=is_not_a_test_module)
 
 # The application source, shipped as files so Streamlit can run them.
-for source in ("app.py", "launcher.py"):
+for source in ("app.py", "home.py", "launcher.py"):
     datas.append((str(PROJECT_ROOT / source), "."))
 
 for package_dir in ("analysis", "ui", "utils", "qc_intel"):

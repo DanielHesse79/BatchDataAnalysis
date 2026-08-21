@@ -8,6 +8,7 @@ the server.
 That is what makes it feel like an installed application, and it costs about a
 hundred lines instead of a rewrite in a native toolkit.
 
+    python launcher.py
     python launcher.py --app qc
     python launcher.py --app batch --browser
 """
@@ -45,6 +46,12 @@ def resource_root() -> Path:
 PROJECT_ROOT = resource_root()
 
 APPS = {
+    "home": {
+        "script": "home.py",
+        "title": "Batch Insight",
+        "width": 1440,
+        "height": 940,
+    },
     "batch": {
         "script": "app.py",
         "title": "Batch Insight Analyzer",
@@ -254,7 +261,7 @@ def run(app_key: str, force_browser: bool) -> int:
 def main() -> int:
     parser = argparse.ArgumentParser(description="Launch a Batch Insight application.")
     parser.add_argument(
-        "--app", choices=sorted(APPS), default="batch",
+        "--app", choices=sorted(APPS), default="home",
         help="Which application to start.",
     )
     parser.add_argument(

@@ -40,9 +40,6 @@ EXAMPLE_WARNING = (
 )
 
 
-st.set_page_config(page_title="QC Intelligence Layer", page_icon="QC", layout="wide")
-
-
 @st.cache_data(show_spinner="Rebuilding derived statistics...")
 def run_analysis(database_path: str, config_dir: str, cache_token: float):
     """Rebuild every derived artefact. Keyed so edits to config invalidate it.
@@ -401,4 +398,5 @@ def main() -> None:
 
 
 if __name__ == "__main__":
+    st.set_page_config(page_title="QC Intelligence Layer", page_icon="QC", layout="wide")
     main()
