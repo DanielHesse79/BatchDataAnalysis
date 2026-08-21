@@ -1,0 +1,50 @@
+sample_id,original_run_id,original_value,repeat_run_id,repeat_value,dilution_factor,reason,reported_value,reported_from
+BE-2026-014-0047,R002,,R003,534.24,5,Result above ULOQ; reanalysed with 5-fold dilution,534.24,repeat
+BE-2026-014-0048,R002,,R003,547.56,5,Result above ULOQ; reanalysed with 5-fold dilution,547.56,repeat
+BE-2026-014-0049,R002,,R003,542.6,5,Result above ULOQ; reanalysed with 5-fold dilution,542.6,repeat
+BE-2026-014-0075,R003,,R004,549.99,5,Result above ULOQ; reanalysed with 5-fold dilution,549.99,repeat
+BE-2026-014-0076,R003,,R004,606.88,5,Result above ULOQ; reanalysed with 5-fold dilution,606.88,repeat
+BE-2026-014-0077,R003,,R004,623.95,5,Result above ULOQ; reanalysed with 5-fold dilution,623.95,repeat
+BE-2026-014-0078,R003,,R004,600.94,5,Result above ULOQ; reanalysed with 5-fold dilution,600.94,repeat
+BE-2026-014-0079,R004,,R005,505.69,5,Result above ULOQ; reanalysed with 5-fold dilution,505.69,repeat
+BE-2026-014-0090,R004,,R005,472.3,5,Result above ULOQ; reanalysed with 5-fold dilution,472.3,repeat
+BE-2026-014-0091,R004,,R005,639.04,5,Result above ULOQ; reanalysed with 5-fold dilution,639.04,repeat
+BE-2026-014-0092,R004,,R005,586.89,5,Result above ULOQ; reanalysed with 5-fold dilution,586.89,repeat
+BE-2026-014-0093,R004,,R005,550.82,5,Result above ULOQ; reanalysed with 5-fold dilution,550.82,repeat
+BE-2026-014-0186,R009,,R010,541.08,5,Result above ULOQ; reanalysed with 5-fold dilution,541.08,repeat
+BE-2026-014-0187,R009,,R010,537.8,5,Result above ULOQ; reanalysed with 5-fold dilution,537.8,repeat
+BE-2026-014-0188,R009,,R010,563.76,5,Result above ULOQ; reanalysed with 5-fold dilution,563.76,repeat
+BE-2026-014-0189,R009,,R010,727.95,5,Result above ULOQ; reanalysed with 5-fold dilution,727.95,repeat
+BE-2026-014-0190,R009,,R010,609.32,5,Result above ULOQ; reanalysed with 5-fold dilution,609.32,repeat
+BE-2026-014-0191,R009,,R010,495.42,5,Result above ULOQ; reanalysed with 5-fold dilution,495.42,repeat
+BE-2026-014-0300,R013,,R014,533.31,5,Result above ULOQ; reanalysed with 5-fold dilution,533.31,repeat
+BE-2026-014-0301,R013,,R014,535.54,5,Result above ULOQ; reanalysed with 5-fold dilution,535.54,repeat
+BE-2026-014-0157,R007,,R008,,1,Run rejected on QC acceptance criteria; samples reanalysed,,repeat
+BE-2026-014-0158,R007,,R008,,1,Run rejected on QC acceptance criteria; samples reanalysed,,repeat
+BE-2026-014-0159,R007,,R008,,1,Run rejected on QC acceptance criteria; samples reanalysed,,repeat
+BE-2026-014-0160,R007,,R008,,1,Run rejected on QC acceptance criteria; samples reanalysed,,repeat
+BE-2026-014-0161,R007,,R008,,1,Run rejected on QC acceptance criteria; samples reanalysed,,repeat
+BE-2026-014-0162,R007,,R008,,1,Run rejected on QC acceptance criteria; samples reanalysed,,repeat
+BE-2026-014-0163,R007,,R008,,1,Run rejected on QC acceptance criteria; samples reanalysed,,repeat
+BE-2026-014-0164,R007,,R008,,1,Run rejected on QC acceptance criteria; samples reanalysed,,repeat
+BE-2026-014-0165,R007,,R008,,1,Run rejected on QC acceptance criteria; samples reanalysed,,repeat
+BE-2026-014-0166,R007,,R008,,1,Run rejected on QC acceptance criteria; samples reanalysed,,repeat
+BE-2026-014-0167,R007,,R008,,1,Run rejected on QC acceptance criteria; samples reanalysed,,repeat
+BE-2026-014-0168,R007,,R008,,1,Run rejected on QC acceptance criteria; samples reanalysed,,repeat
+BE-2026-014-0169,R007,,R008,,1,Run rejected on QC acceptance criteria; samples reanalysed,,repeat
+BE-2026-014-0170,R007,,R008,,1,Run rejected on QC acceptance criteria; samples reanalysed,,repeat
+BE-2026-014-0171,R007,,R008,,1,Run rejected on QC acceptance criteria; samples reanalysed,,repeat
+BE-2026-014-0172,R007,,R008,,1,Run rejected on QC acceptance criteria; samples reanalysed,,repeat
+BE-2026-014-0173,R007,,R008,,1,Run rejected on QC acceptance criteria; samples reanalysed,,repeat
+BE-2026-014-0174,R007,,R008,,1,Run rejected on QC acceptance criteria; samples reanalysed,,repeat
+BE-2026-014-0175,R007,,R008,,1,Run rejected on QC acceptance criteria; samples reanalysed,,repeat
+BE-2026-014-0176,R007,,R008,,1,Run rejected on QC acceptance criteria; samples reanalysed,,repeat
+BE-2026-014-0177,R007,,R008,,1,Run rejected on QC acceptance criteria; samples reanalysed,,repeat
+BE-2026-014-0178,R007,,R008,,1,Run rejected on QC acceptance criteria; samples reanalysed,,repeat
+BE-2026-014-0179,R007,,R008,,1,Run rejected on QC acceptance criteria; samples reanalysed,,repeat
+BE-2026-014-0180,R007,,R008,,1,Run rejected on QC acceptance criteria; samples reanalysed,,repeat
+BE-2026-014-0181,R007,,R008,,1,Run rejected on QC acceptance criteria; samples reanalysed,,repeat
+BE-2026-014-0182,R007,,R008,,1,Run rejected on QC acceptance criteria; samples reanalysed,,repeat
+BE-2026-014-0117,R005,315.88,R006,325.68,1,Integration failure; chromatographic interference at the peak,315.88,original
+BE-2026-014-0321,R014,64.85,R015,66.81,1,Integration failure; chromatographic interference at the peak,64.85,original
+BE-2026-014-0249,R011,267.06,R012,253.8,1,Integration failure; chromatographic interference at the peak,267.06,original

@@ -144,20 +144,36 @@ def check_unknown_variables(report_text: str, report_pack: dict[str, Any]) -> li
 
 
 def check_mislabeled_categorical_levels(report_text: str, report_pack: dict[str, Any]) -> list[str]:
-    """Warn when known categorical levels are attached to the wrong variable name."""
+    """Warn when a known categorical level is attached to the wrong variable.
+
+    Two restrictions keep this from firing on correct reports.
+
+    Only mentions whose left-hand side is itself a known categorical variable
+    count. Dummy-coded variables have bare numbers as levels, so without this
+    every statistic written as name=number matched one: `Q2=0`, `R2=0` and
+    `mean=1.0` were all reported as category mix-ups. A left-hand side that is
+    not a categorical variable is check_unknown_variables' business, not this
+    check's.
+
+    Names are compared case-insensitively. A model that writes `bioreactor_ID`
+    has the variable right, and saying otherwise trains the reader to ignore
+    the warnings that matter.
+    """
     allowed_levels = report_pack.get("allowed_variables", {}).get("categorical_levels", {})
     if not allowed_levels:
         return []
 
-    level_to_variables: dict[str, set[str]] = {}
+    canonical_variables: dict[str, str] = {}
+    level_owners: dict[str, set[str]] = {}
     for variable, levels in allowed_levels.items():
+        canonical_variables[str(variable).lower()] = str(variable)
         for level in levels:
-            level_to_variables.setdefault(str(level), set()).add(variable)
+            level_owners.setdefault(str(level), set()).add(str(variable).lower())
 
     # Match the levels this pack actually contains rather than a fixed shape such
     # as ABC-123; real level names include Supplier_B, RM_005, and bare numbers.
     # Backticks around either side are optional because models format both ways.
-    known_levels = sorted(level_to_variables, key=len, reverse=True)
+    known_levels = sorted(level_owners, key=len, reverse=True)
     if not known_levels:
         return []
 
@@ -169,10 +185,16 @@ def check_mislabeled_categorical_levels(report_text: str, report_pack: dict[str,
         report_text,
     )
     for variable, level in labeled_mentions:
-        if variable not in level_to_variables[level]:
-            warnings.append(
-                f"Possible categorical mix-up: {variable}={level}, but {level} belongs to {', '.join(sorted(level_to_variables[level]))}."
-            )
+        normalized_variable = variable.lower()
+        if normalized_variable not in canonical_variables:
+            continue
+        if normalized_variable in level_owners[level]:
+            continue
+
+        owners = sorted(canonical_variables[owner] for owner in level_owners[level])
+        warnings.append(
+            f"Possible categorical mix-up: {variable}={level}, but {level} belongs to {', '.join(owners)}."
+        )
 
     return warnings
 

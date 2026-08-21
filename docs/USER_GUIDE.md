@@ -352,19 +352,32 @@ and README without leaving the Streamlit UI.
 
 ## 15. Choosing An Ollama Model
 
-Good options:
+Measured on the two synthetic datasets, three runs each, scored with
+`analysis/report_validator.py`. Lower is better; a warning means the report
+misrepresents the evidence pack, not that it reads badly.
 
-- `ministral-3:14b`: recommended daily driver for speed and quality.
-- `qwen3.5:9b`: fast test model.
-- `mistral-small3.2:24b`: slower, often more polished.
-- `nemotron-3-super:cloud`: cloud model; may be higher quality but not local.
-  Requires ticking `Allow Ollama Cloud models` first.
+| Model | Time | Warnings per report | Clean reports |
+|---|---|---|---|
+| `gemma4:e4b` | 21 s | 0.17 | 5 of 6 |
+| `ministral-3:14b` | 35 s | 0.33 | 4 of 6 |
+| `gemma4:12b` | 26 s | 0.50 | 4 of 6 |
+| `qwen3.5:9b` | 37 s | 2.00 | 0 of 6 |
+| `gpt-oss:20b` | 35 s | 2.00 | 0 of 6 |
 
-Reasoning models such as `gpt-oss:20b` also work and write good reports, but
-they spend part of the generation budget on hidden reasoning before writing
-anything. On a large evidence pack that makes them noticeably slower. If a
-reasoning model returns nothing at all, the app now says so instead of showing
-an empty report; select fewer outcomes or switch to a non-reasoning model.
+- `gemma4:e4b`: recommended. Fastest, and an effective-4B runs on a laptop
+  without a GPU.
+- `gemma4:12b`, `ministral-3:14b`: equivalent alternatives. The accuracy gap
+  between the top three is one warning across six runs, which is noise; the
+  speed difference is not.
+- `qwen3.5:9b`, `gpt-oss:20b`: not recommended. Both write long reports that
+  omit the required section headings, which the PDF export depends on.
+- `nemotron-3-super:cloud`: cloud model, not local. Requires ticking
+  `Allow Ollama Cloud models` first.
+
+**Leave thinking off.** It was measured on and off for every model that supports
+it, and it never helped: `gemma4:12b` got slower and slightly worse,
+`gpt-oss:20b` was unchanged, and `qwen3.5:9b` returned an empty report in six
+runs out of six because the whole generation budget went to hidden reasoning.
 
 If a model repeats itself, leaks thinking text, or invents file paths, regenerate
 with a different model. The app includes stop tokens and output cleanup, but

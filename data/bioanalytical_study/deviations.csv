@@ -1,0 +1,3 @@
+deviation_id,deviation_type,description,runs_affected,assessed_impact
+DEV-001,Storage,Freezer FR-12 recorded -14 C for 6 hours. Study samples for the affected runs were stored in this unit.,"R009, R010, R011",No impact. Long-term stability at -20 C covers the excursion duration and temperature; QC results in the affected runs met acceptance criteria.
+DEV-002,Analytical,Run R007 rejected on QC acceptance criteria. Samples reanalysed in the following run.,R007,No impact on reported results. No sample was reported from the rejected run.

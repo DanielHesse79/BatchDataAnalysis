@@ -19,7 +19,7 @@ except ImportError:  # pragma: no cover - optional until Phase 8 pins dependenci
 
 
 DEFAULT_OLLAMA_BASE_URL = "http://localhost:11434"
-DEFAULT_OLLAMA_MODEL = "llama3.1"
+DEFAULT_OLLAMA_MODEL = "gemma4:e4b"
 # Generation legitimately takes minutes; listing models does not, and a long read
 # timeout there stalls the whole Streamlit script.
 REQUEST_TIMEOUT_SECONDS = (5, 300)
@@ -204,14 +204,18 @@ def choose_default_model(available_models: list[str]) -> str:
     # models are preferred for the default: a reasoning model spends part of its
     # generation budget thinking before it writes anything, which is slower and
     # can leave no room for the report on a large evidence pack.
+    # Ordered by measured result, not reputation: see docs/USER_GUIDE.md
+    # section 15. gemma4:e4b is both the fastest and the least likely to
+    # misrepresent the pack; qwen3.5 and gpt-oss are last because they omit the
+    # section headings the report structure depends on.
     preferred_patterns = [
-        "ministral",
-        "mistral-small",
+        "gemma4:e4b",
         "gemma4:12b",
-        "qwen3.5:9b",
+        "ministral",
+        "gemma",
         "llama3.1",
         "llama3",
-        "gemma",
+        "qwen3.5",
         "qwen",
     ]
     lowercase_models = {model_name.lower(): model_name for model_name in available_models}

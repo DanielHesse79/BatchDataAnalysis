@@ -127,11 +127,14 @@ Default local Ollama URL:
 http://localhost:11434
 ```
 
-Recommended local models for this app:
+Recommended local models for this app, measured rather than assumed (see
+`docs/USER_GUIDE.md` section 15):
 
-- `ministral-3:14b` for a good speed/quality balance.
-- `qwen3.5:9b` for quick iteration.
-- `mistral-small3.2:24b` for slower but more polished reports.
+- `gemma4:e4b` for the fewest validator warnings and the shortest wait.
+- `gemma4:12b` or `ministral-3:14b` as equivalent alternatives.
+
+`qwen3.5:9b` and `gpt-oss:20b` are not recommended: both omit required section
+headings. Leave model thinking off.
 
 The app also includes `nemotron-3-super:cloud` as a selectable shortcut. Cloud
 models may route the analysis summary through Ollama Cloud, so only use them for
@@ -141,7 +144,7 @@ Optional `.env` values:
 
 ```text
 OLLAMA_BASE_URL=http://localhost:11434
-OLLAMA_MODEL=ministral-3:14b
+OLLAMA_MODEL=gemma4:e4b
 ```
 
 ## Optional CatBoost Explainability
