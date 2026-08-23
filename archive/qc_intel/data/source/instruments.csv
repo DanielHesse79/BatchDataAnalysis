@@ -1,0 +1,4 @@
+instrument_id,instrument_model,asset_tag,installation_date,software_version
+LCMS-01,Xevo TQ-S,ASSET-4100,2022-03-15,MassLynx 4.2 SCN1015
+LCMS-02,Xevo TQ-S,ASSET-4101,2022-03-15,MassLynx 4.2 SCN1015
+LCMS-03,Xevo TQ-S,ASSET-4102,2022-03-15,MassLynx 4.2 SCN1015

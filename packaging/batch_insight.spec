@@ -4,8 +4,8 @@
 # handled here.
 #
 # Streamlit executes the app as a *script*, not as an imported module. So
-# app.py, qc_intel/app.py and every package they import must be shipped as real
-# files inside the bundle, not only as frozen bytecode. They go in as datas.
+# app.py and every package it imports must be shipped as real files inside the
+# bundle, not only as frozen bytecode. They go in as datas.
 #
 # Streamlit also loads its own static assets and reads its distribution
 # metadata at runtime, so collect_all is used rather than a hand-written list
@@ -61,14 +61,14 @@ def is_not_a_test_module(module_name):
     return ".tests" not in module_name
 
 
-for package in ("analysis", "ui", "utils", "qc_intel"):
+for package in ("analysis", "ui", "utils"):
     hiddenimports += collect_submodules(package, filter=is_not_a_test_module)
 
 # The application source, shipped as files so Streamlit can run them.
-for source in ("app.py", "home.py", "launcher.py"):
+for source in ("app.py", "launcher.py"):
     datas.append((str(PROJECT_ROOT / source), "."))
 
-for package_dir in ("analysis", "ui", "utils", "qc_intel"):
+for package_dir in ("analysis", "ui", "utils"):
     datas.append((str(PROJECT_ROOT / package_dir), package_dir))
 
 for document in ("README.md",):

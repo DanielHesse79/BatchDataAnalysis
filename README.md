@@ -5,17 +5,25 @@ teams. A shared start page routes users into two deliberately separate
 workspaces, because they answer different questions and use different data
 structures.
 
-## Choose The Right Workspace
+## What This Is
 
-| Workspace | Question | Typical input | Main output |
-|---|---|---|---|
-| **Batch Insight Analyzer** | Which process conditions are associated with QC outcomes? | One row per manufacturing batch, joined to QC results | Ranked process drivers, response shapes, specs/windows, interpretation and PDF |
-| **QC Intelligence Layer** | Is an analytical method or instrument quietly changing over time? | Run-level QC metadata across methods, instruments and months | Control charts, drift/step/variance findings, instrument comparisons and provenance |
+Batch Insight Analyzer links **manufacturing process conditions to QC release
+outcomes**: one row per batch, joined to its release results, and an answer to
+which process variables are associated with the outcome.
 
-The workspaces share a launcher and installation bundle, but keep separate
-analysis pipelines. Batch driver analysis is cross-sectional and uses PCA, PLS
-and tree models. QC monitoring is longitudinal, deterministic, and deliberately
-uses neither machine learning nor generative AI.
+The analysis is cross-sectional over batches and uses PCA, PLS and tree models.
+
+### The clinical half moved out
+
+This repository also held a QC trending tool for bioanalytical laboratories.
+It is now its own product, [LabInsight](https://github.com/DanielHesse79/LabInsight),
+because it serves a different customer, needs a different data model, and is
+heading toward computerised system validation while this one is not.
+
+If you are looking for run-level QC drift across instruments and months, or for
+study report generation, it is there and not here. `docs/DOMAINS.md` explains
+the split and the three words that mean different things on either side of it -
+QC, validation and batch.
 
 ## Batch Insight Analyzer Capabilities
 
@@ -45,21 +53,6 @@ The batch-driver workspace provides:
 - Local or Ollama Cloud interpretation.
 - PDF report export with summary tables, driver charts, PCA overview, specs, and appendix.
 - Streamlit UI polish and theme.
-
-## QC Intelligence Layer Capabilities
-
-The QC-monitoring workspace provides:
-
-- CSV, TSV, XLSX and XLS intake with proposed table and column mappings.
-- Personal-data screening before mapped records enter the database.
-- Run-ordered control charts with fixed acceptance limits and frozen baselines.
-- Deterministic gradual-drift, step-change and variance-increase detection.
-- Method, instrument and QC-level comparisons ranked by effect size.
-- Source-file, ingest and row-level provenance.
-- A local SQLite store with checksummed, duplicate-safe ingestion.
-
-See [qc_intel/README.md](qc_intel/README.md) for its scope, statistical choices
-and data model.
 
 ## What The App Is For
 
@@ -94,17 +87,10 @@ The launcher opens a start page where you can choose either workspace and switch
 between them from the top navigation. If the desktop window dependency is not
 installed, it falls back to the default browser.
 
-To run the shared Streamlit entry point directly:
+To run Streamlit directly:
 
 ```powershell
-streamlit run home.py
-```
-
-Direct entry points remain available for frequent users and automation:
-
-```powershell
-.\.venv\Scripts\python.exe launcher.py --app batch
-.\.venv\Scripts\python.exe launcher.py --app qc
+.\.venv\Scripts\python.exe launcher.py
 ```
 
 Run the automated tests:
@@ -213,16 +199,8 @@ analysis does not recover these signals, the workflow needs attention.
 
 ```text
 batch-insight-analyzer/
-|-- home.py
 |-- launcher.py
 |-- app.py
-|-- qc_intel/
-|   |-- app.py
-|   |-- pipeline.py
-|   |-- detectors.py
-|   |-- db.py
-|   |-- ingest/
-|   `-- tests/
 |-- generate_synthetic_data.py
 |-- generate_mock_spec_data.py
 |-- generate_messy_field_data.py

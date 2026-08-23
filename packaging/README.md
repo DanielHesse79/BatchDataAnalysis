@@ -3,9 +3,8 @@
 ## For a user
 
 Copy the project folder to the machine, open `packaging`, and double-click
-**`Install.cmd`**. Pick an option, wait, done. The **Batch Insight** shortcut
-opens a shared workspace chooser. Direct shortcuts for both analysis workspaces
-also appear on the Desktop and in the Start Menu.
+**`Install.cmd`**. Pick an option, wait, done. A **Batch Insight Analyzer**
+shortcut appears on the Desktop and in the Start Menu.
 
 Everything is per-user: nothing is written to Program Files, no service is
 registered, and no administrator rights are needed. That matters on managed
@@ -18,7 +17,7 @@ clearly and stops if it cannot find one.
 
 | Option | Installs | Extra size |
 |---|---|---|
-| 1 Standard | Shared chooser, both workspaces and the desktop window | about 1 GB |
+| 1 Standard | The app and the desktop window | about 1 GB |
 | 2 With optional models | Plus CatBoost, XGBoost, SHAP | about 500 MB more |
 | 3 Developer | Plus pytest | small |
 
@@ -41,7 +40,7 @@ The uninstaller never touches project files, databases or generated reports.
 
 ## Why it is still Streamlit
 
-The apps are Streamlit, which is a local web server. They are not, however, a
+The app is Streamlit, which is a local web server. It is not, however, a
 browser experience any more: `launcher.py` starts the server on a free port,
 waits for it to answer, and shows it in a native window through the operating
 system's web view — Edge WebView2 on Windows. The user gets a taskbar entry, no
@@ -56,9 +55,7 @@ than failing, so a partial install still works.
 
 ```powershell
 .\.venv\Scripts\python.exe launcher.py
-.\.venv\Scripts\python.exe launcher.py --app batch
-.\.venv\Scripts\python.exe launcher.py --app qc
-.\.venv\Scripts\python.exe launcher.py --app qc --browser   # force a browser
+.\.venv\Scripts\python.exe launcher.py --browser   # force a browser
 ```
 
 ## For users who should never see a dependency
@@ -71,9 +68,8 @@ not developers, build the self-contained bundle instead:
 ```
 
 That produces `dist\BatchInsight\` holding `BatchInsight.exe` and everything it
-needs. Users copy the folder and double-click **Open Batch Insight.cmd** to
-choose a workspace. The two direct-entry command files remain available. No
-Python, no pip, no administrator rights, nothing to configure.
+needs. Users copy the folder and double-click the executable. No Python, no pip,
+no administrator rights, nothing to configure.
 
 The build is a developer step. Users never run it.
 
@@ -87,9 +83,9 @@ enough: configuration is resolved before the environment is consulted, so the
 server has to be configured through `load_config_options`, exactly as
 Streamlit's CLI does it.
 
-Streamlit also executes the app as a *script*, so `home.py`, `app.py`, `qc_intel/app.py`
-and every package they import are shipped as real files inside the bundle
-rather than only as frozen bytecode.
+Streamlit also executes the app as a *script*, so `app.py` and every package it
+imports are shipped as real files inside the bundle rather than only as frozen
+bytecode.
 
 The bundle is built one-dir rather than one-file deliberately. One-file unpacks
 several hundred megabytes to a temporary directory on every launch, which turns
@@ -106,16 +102,11 @@ normal launch, and no amount of engineering substitutes for it.
 **Consider hosting it once instead.** If the people who need this are colleagues
 on one network, running a single instance on an internal machine and sending
 them a URL removes installation entirely, for everyone, forever. It also gives
-one place to update and one database for QC trending across the laboratory. For
-that audience it is less work than distributing bundles and worth deciding
-before committing to per-machine installs.
+one place to update. For that audience it is less work than distributing
+bundles and worth deciding before committing to per-machine installs.
 
 **A regulated site has its own process.** On a GxP machine, installing software
-is a controlled activity regardless of how good the installer is. The apps
-declare themselves not-validated and read-only, which keeps them out of the
-qualification path, but site IT still decides what gets installed.
+is a controlled activity regardless of how good the installer is. The app
+declares itself not-validated, which keeps it out of the qualification path, but
+site IT still decides what gets installed.
 
-**The QC Intelligence Layer starts on example data.** An installed copy seeds
-itself from the bundled example dataset and says so, in the dashboard, until
-real data replaces it. Loading real data is done in the Load data tab, and the
-notice disappears with the first file.

@@ -18,7 +18,9 @@ $ProjectRoot = Split-Path -Parent $PSScriptRoot
 $startMenu = Join-Path $env:APPDATA "Microsoft\Windows\Start Menu\Programs\Batch Insight"
 $desktop = [Environment]::GetFolderPath("Desktop")
 
-foreach ($name in @("Batch Insight", "Batch Insight Analyzer", "QC Intelligence Layer")) {
+# The first two are legacy shortcut names from when this repository shipped two
+# workspaces; removing them keeps an upgrade from leaving a dead icon behind.
+foreach ($name in @("Batch Insight", "QC Intelligence Layer", "Batch Insight Analyzer")) {
     foreach ($folder in @($startMenu, $desktop)) {
         $path = Join-Path $folder "$name.lnk"
         if (Test-Path $path) { Remove-Item $path -Force; Write-Host "Removed $path" }

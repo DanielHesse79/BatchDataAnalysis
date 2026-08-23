@@ -1,0 +1,8 @@
+material_id,material_type,manufacturer,lot_number,date_opened,expiry_date,concentration
+REF-ASSAY_A-01,reference_standard,Certified Standards Ltd,RS2025001,2025-01-06,2026-01-06,1000.0
+REF-ASSAY_A-02,reference_standard,Certified Standards Ltd,RS2025002,2025-08-04,2026-08-04,1000.0
+REF-ASSAY_B-01,reference_standard,Certified Standards Ltd,RS2025001,2025-01-06,2026-01-06,1000.0
+REF-ASSAY_B-02,reference_standard,Certified Standards Ltd,RS2025002,2025-08-04,2026-08-04,1000.0
+REF-ASSAY_C-01,reference_standard,Certified Standards Ltd,RS2025001,2025-01-06,2026-01-06,1000.0
+REF-ASSAY_C-02,reference_standard,Certified Standards Ltd,RS2025002,2025-08-04,2026-08-04,1000.0
+COL-0007,column,Waters,ACQ-BEH-C18-0007,2025-07-06,,

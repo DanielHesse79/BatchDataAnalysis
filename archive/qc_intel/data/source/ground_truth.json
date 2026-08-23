@@ -1,0 +1,25 @@
+{
+  "generated_at": "2026-08-15T18:40:52+00:00",
+  "seed": 20260814,
+  "stable_method": "ASSAY_A",
+  "gradual_drift": {
+    "method_id": "ASSAY_B",
+    "instrument_id": "LCMS-02",
+    "starts_month": 4,
+    "total_percent": -11.0
+  },
+  "step_change": {
+    "method_id": "ASSAY_C",
+    "at_month": 7,
+    "percent": 6.5,
+    "coincides_with": "new_reference_standard_lot"
+  },
+  "variance_increase": {
+    "method_id": "ASSAY_C",
+    "instrument_id": "LCMS-03",
+    "starts_month": 6,
+    "cv_from": 3.0,
+    "cv_to": 8.5
+  },
+  "random_failure_rate": 0.012
+}

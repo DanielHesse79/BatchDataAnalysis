@@ -18,30 +18,26 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 PACKAGING_DIR = PROJECT_ROOT / "packaging"
 
 
-def test_every_app_points_at_a_real_script():
+def test_the_app_script_exists():
     """A renamed entry point would fail only when a user clicks the shortcut."""
-    for key, app in launcher.APPS.items():
-        script = PROJECT_ROOT / app["script"]
-        assert script.exists(), f"{key} points at missing {app['script']}"
+    assert (PROJECT_ROOT / launcher.APP_SCRIPT).exists()
 
 
-def test_every_app_has_a_window_title():
-    for app in launcher.APPS.values():
-        assert app["title"].strip()
-        assert app["width"] > 0 and app["height"] > 0
+def test_the_window_is_named_and_sized():
+    assert launcher.WINDOW_TITLE.strip()
+    assert all(dimension > 0 for dimension in launcher.WINDOW_SIZE)
 
 
-def test_launcher_defaults_to_the_shared_workspace_chooser(monkeypatch):
+def test_launcher_opens_the_one_application(monkeypatch):
+    """One product, one entry point. The workspace chooser left with the split."""
     calls = []
     monkeypatch.setattr(sys, "argv", ["launcher.py"])
     monkeypatch.setattr(
-        launcher,
-        "run",
-        lambda app_key, force_browser: calls.append((app_key, force_browser)) or 0,
+        launcher, "run", lambda force_browser: calls.append(force_browser) or 0,
     )
 
     assert launcher.main() == 0
-    assert calls == [("home", False)]
+    assert calls == [False]
 
 
 def test_find_free_port_returns_a_bindable_port():
@@ -104,11 +100,10 @@ def test_the_installer_only_offers_supported_python_versions():
     assert '"3.13", "3.12", "3.11"' in installer
 
 
-def test_the_installer_creates_shortcuts_for_every_app():
+def test_the_installer_creates_a_shortcut_for_the_app():
     installer = (PACKAGING_DIR / "install.ps1").read_text(encoding="utf-8")
 
-    for app in launcher.APPS.values():
-        assert app["title"] in installer, f"no shortcut for {app['title']}"
+    assert launcher.WINDOW_TITLE in installer
 
 
 def test_the_desktop_requirements_pull_in_the_base_set():

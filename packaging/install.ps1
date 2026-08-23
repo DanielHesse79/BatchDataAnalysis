@@ -1,6 +1,6 @@
 <#
 .SYNOPSIS
-    Set up Batch Insight Analyzer and the QC Intelligence Layer on this machine.
+    Set up Batch Insight Analyzer on this machine.
 
 .DESCRIPTION
     Creates a virtual environment, installs dependencies, verifies the install,
@@ -160,7 +160,7 @@ required = ['streamlit', 'pandas', 'numpy', 'sklearn', 'scipy', 'plotly', 'repor
 missing = [name for name in required if importlib.util.find_spec(name) is None]
 if missing:
     print('MISSING: ' + ', '.join(missing)); sys.exit(1)
-import qc_intel, analysis, ui
+import analysis, ui
 print('OK')
 "@
 $verifyResult = & $VenvPython -c $verifyScript 2>&1
@@ -185,23 +185,15 @@ if (-not $NoShortcuts) {
     $startMenu = Join-Path $env:APPDATA "Microsoft\Windows\Start Menu\Programs\Batch Insight"
     New-Item -ItemType Directory -Force -Path $startMenu | Out-Null
 
-    $shortcuts = @(
-        @{ Name = "Batch Insight";          App = "home";  Description = "Choose between batch driver analysis and QC monitoring" },
-        @{ Name = "Batch Insight Analyzer"; App = "batch"; Description = "Link batch process parameters to QC outcomes" },
-        @{ Name = "QC Intelligence Layer";  App = "qc";    Description = "Trend QC drift across runs, instruments and methods" }
-    )
-
-    foreach ($entry in $shortcuts) {
-        foreach ($folder in @($startMenu, [Environment]::GetFolderPath("Desktop"))) {
-            New-Shortcut `
-                -Path (Join-Path $folder "$($entry.Name).lnk") `
-                -TargetPath $pythonwExe `
-                -Arguments "`"$launcher`" --app $($entry.App)" `
-                -WorkingDirectory $ProjectRoot `
-                -Description $entry.Description
-        }
-        Write-Good $entry.Name
+    foreach ($folder in @($startMenu, [Environment]::GetFolderPath("Desktop"))) {
+        New-Shortcut `
+            -Path (Join-Path $folder "Batch Insight Analyzer.lnk") `
+            -TargetPath $pythonwExe `
+            -Arguments "`"$launcher`"" `
+            -WorkingDirectory $ProjectRoot `
+            -Description "Link batch process parameters to QC outcomes"
     }
+    Write-Good "Batch Insight Analyzer"
 }
 
 # ------------------------------------------------------------------- done
@@ -210,11 +202,7 @@ Write-Host @"
 Installation complete.
 
   Start from the Start Menu or Desktop shortcut, or run:
-      .\.venv\Scripts\python.exe launcher.py --app batch
-      .\.venv\Scripts\python.exe launcher.py --app qc
-
-  Generate the QC prototype's synthetic data first if you want to explore it:
-      .\.venv\Scripts\python.exe -m qc_intel.build_prototype
+      .\.venv\Scripts\python.exe launcher.py
 
 "@ -ForegroundColor Green
 

@@ -11,7 +11,7 @@
     the project's dependencies. Users never run it.
 
 .PARAMETER Zip
-    Also produce dist\BatchInsight-<version>.zip for distribution.
+    Also produce dist\BatchInsight.zip for distribution.
 
 .PARAMETER Clean
     Delete previous build and dist output first.
@@ -52,17 +52,6 @@ if ($LASTEXITCODE -ne 0) {
 $pyinstallerVersion = (& $VenvPython -c "import PyInstaller; print(PyInstaller.__version__)").Trim()
 Write-Host "    PyInstaller $pyinstallerVersion" -ForegroundColor Green
 
-# The example dataset is generated, not committed, so a clean checkout has none.
-# Without it an installed copy opens on an error instead of a demonstration.
-$ExampleDatabase = Join-Path $ProjectRoot "qc_intel\data\qc_intel.sqlite"
-if (-not (Test-Path $ExampleDatabase)) {
-    Write-Step "Generating the example QC dataset"
-    & $VenvPython -m qc_intel.synth.generate
-    if ($LASTEXITCODE -ne 0) { throw "Could not generate the example dataset" }
-    & $VenvPython -m qc_intel.build_prototype
-    if ($LASTEXITCODE -ne 0) { throw "Could not build the example database" }
-}
-
 if ($Clean) {
     Write-Step "Cleaning previous output"
     foreach ($path in @($BuildDir, $DistDir)) {
@@ -96,27 +85,14 @@ if ($check.ExitCode -ne 0) {
 }
 Write-Host "    every shipped module imports" -ForegroundColor Green
 
-Write-Step "Adding the launcher shortcuts"
-# A shared chooser plus two direct-entry wrappers for frequent users.
-@(
-    @{ File = "Open Batch Insight.cmd";      App = "home" },
-    @{ File = "Batch Insight Analyzer.cmd"; App = "batch" },
-    @{ File = "QC Intelligence Layer.cmd";  App = "qc" }
-) | ForEach-Object {
-    $content = "@echo off`r`nstart """" ""%~dp0BatchInsight.exe"" --app $($_.App)`r`n"
-    Set-Content -Path (Join-Path $BundleDir $_.File) -Value $content -Encoding ASCII
-    Write-Host "    $($_.File)" -ForegroundColor Green
-}
-
 Set-Content -Path (Join-Path $BundleDir "READ ME FIRST.txt") -Encoding UTF8 -Value @"
-Batch Insight
-=============
+Batch Insight Analyzer
+======================
 
-Double-click Open Batch Insight.cmd to choose a workspace, or use a direct shortcut:
+Double-click BatchInsight.exe to start.
 
-    Open Batch Insight.cmd          Choose between both analysis workspaces
-    Batch Insight Analyzer.cmd     Link batch process parameters to QC outcomes
-    QC Intelligence Layer.cmd      Trend QC drift across runs and instruments
+Links batch process parameters to QC outcomes: merge the records, audit the
+data, then compare PCA, PLS and Random Forest.
 
 Nothing needs to be installed. No Python, no dependencies, no administrator
 rights. The first start takes a few seconds while the application unpacks.
@@ -131,8 +107,7 @@ and must not be used for run acceptance or regulatory reporting.
 
 if ($Zip) {
     Write-Step "Creating the distribution archive"
-    $version = (& $VenvPython -c "import sys; sys.path.insert(0,r'$ProjectRoot'); import qc_intel; print(qc_intel.__version__)").Trim()
-    $zipPath = Join-Path $DistDir "BatchInsight-$version.zip"
+    $zipPath = Join-Path $DistDir "BatchInsight.zip"
     if (Test-Path $zipPath) { Remove-Item $zipPath -Force }
     Compress-Archive -Path $BundleDir -DestinationPath $zipPath -CompressionLevel Optimal
     $zipMb = (Get-Item $zipPath).Length / 1MB
@@ -144,9 +119,8 @@ Write-Host @"
 Build complete.
 
   Bundle:  $BundleDir
-  Test it: & "$BundleDir\BatchInsight.exe" --app qc
+  Test it: & "$BundleDir\BatchInsight.exe"
 
-  Distribute the folder, or the zip if you built one. Users double-click
-  "Batch Insight Analyzer.cmd" or "QC Intelligence Layer.cmd".
+  Distribute the folder, or the zip if you built one.
 
 "@ -ForegroundColor Green

@@ -9,8 +9,7 @@ That is what makes it feel like an installed application, and it costs about a
 hundred lines instead of a rewrite in a native toolkit.
 
     python launcher.py
-    python launcher.py --app qc
-    python launcher.py --app batch --browser
+    python launcher.py --browser
 """
 
 from __future__ import annotations
@@ -45,26 +44,9 @@ def resource_root() -> Path:
 
 PROJECT_ROOT = resource_root()
 
-APPS = {
-    "home": {
-        "script": "home.py",
-        "title": "Batch Insight",
-        "width": 1440,
-        "height": 940,
-    },
-    "batch": {
-        "script": "app.py",
-        "title": "Batch Insight Analyzer",
-        "width": 1440,
-        "height": 940,
-    },
-    "qc": {
-        "script": "qc_intel/app.py",
-        "title": "QC Intelligence Layer",
-        "width": 1440,
-        "height": 940,
-    },
-}
+APP_SCRIPT = "app.py"
+WINDOW_TITLE = "Batch Insight Analyzer"
+WINDOW_SIZE = (1440, 940)
 
 STARTUP_TIMEOUT_SECONDS = 90
 HEALTH_POLL_SECONDS = 0.4
@@ -120,7 +102,7 @@ def check_imports() -> int:
     import pkgutil
 
     failures = []
-    for package_name in ("analysis", "ui", "utils", "qc_intel"):
+    for package_name in ("analysis", "ui", "utils"):
         try:
             package = importlib.import_module(package_name)
         except Exception as error:  # noqa: BLE001 - reporting, not handling
@@ -145,7 +127,7 @@ def start_streamlit(script: Path, port: int) -> subprocess.Popen:
     if is_frozen():
         # Re-run this same executable in server mode. Keeping the server in its
         # own process means the window can still be closed by killing a tree.
-        command = [sys.executable, "--serve", "--app-script", str(script), "--port", str(port)]
+        command = [sys.executable, "--serve", "--port", str(port)]
     else:
         command = [
             sys.executable, "-m", "streamlit", "run", str(script),
@@ -222,10 +204,9 @@ def show_in_window(url: str, title: str, width: int, height: int) -> bool:
     return True
 
 
-def run(app_key: str, force_browser: bool) -> int:
-    """Launch one app and block until its window closes."""
-    app = APPS[app_key]
-    script = PROJECT_ROOT / app["script"]
+def run(force_browser: bool) -> int:
+    """Launch the app and block until its window closes."""
+    script = PROJECT_ROOT / APP_SCRIPT
     if not script.exists():
         print(f"Cannot find {script}", file=sys.stderr)
         return 1
@@ -239,14 +220,14 @@ def run(app_key: str, force_browser: bool) -> int:
             error_output = ""
             if process.stderr is not None:
                 error_output = process.stderr.read().decode("utf-8", "replace")[-2000:]
-            print(f"{app['title']} did not start.\n{error_output}", file=sys.stderr)
+            print(f"{WINDOW_TITLE} did not start.\n{error_output}", file=sys.stderr)
             return 1
 
-        if force_browser or not show_in_window(url, app["title"], app["width"], app["height"]):
+        if force_browser or not show_in_window(url, WINDOW_TITLE, *WINDOW_SIZE):
             # No native window available: fall back to the default browser and
             # wait, so closing this window still stops the server.
             webbrowser.open(url)
-            print(f"{app['title']} is running at {url}")
+            print(f"{WINDOW_TITLE} is running at {url}")
             print("Close this window to stop it.")
             try:
                 process.wait()
@@ -261,16 +242,11 @@ def run(app_key: str, force_browser: bool) -> int:
 def main() -> int:
     parser = argparse.ArgumentParser(description="Launch a Batch Insight application.")
     parser.add_argument(
-        "--app", choices=sorted(APPS), default="home",
-        help="Which application to start.",
-    )
-    parser.add_argument(
         "--browser", action="store_true",
         help="Open in the default browser instead of an application window.",
     )
     # Internal: the frozen build re-runs itself in this mode to host the server.
     parser.add_argument("--serve", action="store_true", help=argparse.SUPPRESS)
-    parser.add_argument("--app-script", default=None, help=argparse.SUPPRESS)
     parser.add_argument("--port", type=int, default=None, help=argparse.SUPPRESS)
     # Internal: the build script runs this against the bundle it just produced.
     parser.add_argument("--check-imports", action="store_true", help=argparse.SUPPRESS)
@@ -280,13 +256,10 @@ def main() -> int:
         return check_imports()
 
     if arguments.serve:
-        script = Path(arguments.app_script) if arguments.app_script else (
-            PROJECT_ROOT / APPS[arguments.app]["script"]
-        )
-        serve_in_process(script, arguments.port or find_free_port())
+        serve_in_process(PROJECT_ROOT / APP_SCRIPT, arguments.port or find_free_port())
         return 0
 
-    return run(arguments.app, arguments.browser)
+    return run(arguments.browser)
 
 
 if __name__ == "__main__":
