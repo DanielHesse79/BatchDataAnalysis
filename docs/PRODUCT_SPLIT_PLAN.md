@@ -1,6 +1,9 @@
 # Splitting Into Two Products
 
-A plan, not a commitment. Nothing here is executed yet.
+Decisions taken: **two repositories**, the clinical product is called
+**lab_insight**, and the production app **keeps its LLM narrative for now**.
+
+Nothing is executed yet.
 
 Read `docs/DOMAINS.md` first: it establishes that the two workspaces serve
 different customers, different data and different regulations, and that three
@@ -88,7 +91,24 @@ domain's logic. What both products share is exactly one coherent thing: reading
 a messy tabular file that a laboratory exported. It lives inside `analysis/`
 only because that is where it was written first.
 
-That is a component, not a pile of helpers, and it should be named as one.
+It is not quite one component, though. Checking who else uses those 28
+definitions shows two, tangled together:
+
+| | Used by | Nature |
+|---|---|---|
+| **File reading** - encoding, delimiter, ragged rows, sheets, header row | `ui/state.py`, the intake panels | genuinely intake |
+| **Number parsing** - `parse_numeric_series` and friends | `analysis/aggregation.py`, `analysis/readiness.py` | used all over the production domain |
+| `DataPrepError` | five modules | a cross-cutting exception |
+
+A package called `fileintake` holding number parsing would be misnamed. One
+package with two modules is the right shape:
+
+```
+tabular/
+    errors.py     the shared exception
+    files.py      reading a messy export: encoding, delimiter, sheets, headers
+    numbers.py    numbers as humans write them: decimal commas, units, "<0.5"
+```
 
 ## Target structure
 
@@ -112,9 +132,8 @@ lab_insight/                clinical: QC trending and study reporting
 packaging/                  builds either product
 ```
 
-`lab_insight` is a placeholder name. It needs one that says *retrospective
-analysis and reporting for a bioanalytical laboratory* without claiming to be a
-LIMS. That is a naming decision, not a technical one.
+With two repositories these become two roots rather than two folders. This
+repository keeps its current layout and drops the clinical half.
 
 ## The one real decision: how the shared component is held
 
@@ -145,28 +164,34 @@ helpfully refactors them back together.
 
 Each step leaves the repository working and the tests passing.
 
-1. **Extract `fileintake/`.** Move the 28 definitions out of `analysis/` into
-   a package of their own, and have the production app import from there. One
-   move, no duplication yet, and the production tests prove it still works. This
-   is the step that turns an accidental dependency into a named component.
-2. **Split the test suites.** `tests/` stays with the production app,
-   `qc_intel/tests/` is already separate. Add a runner for each.
-3. **Move the production app** into `batch_insight/`. Mechanical: imports,
-   `packaging/batch_insight.spec`, `launcher.py`, CI.
-4. **Move and rename `qc_intel`** into `lab_insight/trending/`.
-5. **Retire `home.py`.** Each product gets its own entry point. The chooser
-   exists only because the two shared a shell.
-6. **Split packaging.** Two spec files, two bundles. The clinical bundle is much
-   smaller: it needs no PCA, PLS or Random Forest.
-7. **Split the documentation.** `docs/` divides along the same line; `DOMAINS.md`
-   stays at the root as the map.
+Choosing two repositories changes this, and simplifies it. An earlier draft
+began by extracting `tabular/` here so both products could share it. With the
+clinical product leaving, **that extraction is no longer needed in this
+repository**: the coupling disappears when `qc_intel` goes, and the production
+app can keep its code where it is until there is a reason of its own to move it.
 
-Steps 1 and 2 are worth doing whether or not the rest happens: they turn an
-accidental dependency into a named component and let each product's tests run on
-their own.
+The work is therefore building the new repository, not rearranging this one.
 
-Step 1 is larger than the two import statements suggest - 440 lines across three
-modules - so it is its own piece of work, not a warm-up.
+1. **Create the `lab_insight` repository** with `trending/` (from `qc_intel`),
+   its tests, its config and its synthetic data.
+2. **Vendor `tabular/`** into it - files, numbers, errors - copied from
+   `analysis/`, with the source commit recorded at the top of each module. The
+   clinical product now depends on nothing from here.
+3. **Move the report work across**: `docs/REPORT_AUTOMATION_PLAN.md`,
+   `generate_bioanalytical_study.py`, `data/bioanalytical_study/`. They were
+   always clinical.
+4. **Give it its own entry point and packaging.** The clinical bundle needs no
+   PCA, PLS or Random Forest, so it should be far smaller than 683 MB.
+5. **In this repository:** delete `qc_intel/`, retire `home.py`, drop the
+   workspace chooser from `launcher.py` and the spec, and remove the clinical
+   sections from the docs. `DOMAINS.md` stays in both, because both need to know
+   where the line is.
+
+Only after all five does this repository become single-purpose again. Until
+then, keep `qc_intel` here and working - deleting it before the new repository
+runs is how work gets lost.
+
+Step 2 is the only one with real judgement in it. The rest is moving files.
 
 ## What this costs
 
@@ -185,10 +210,10 @@ modules - so it is its own piece of work, not a warm-up.
 
 ## Open questions
 
-1. **What is the clinical product called?** It needs to say retrospective
-   analysis and reporting without claiming to replace a LIMS.
-2. **One repository with two folders, or two repositories?** Two folders first;
-   the split to two repositories becomes obvious once the clinical product has a
-   validation package, because that package versions with its code.
-3. **Does the production app keep the LLM narrative?** It is the part hardest to
-   validate, and only one of the two products is heading that way.
+1. **Where does the `lab_insight` repository live?** A sibling directory beside
+   this one is the obvious answer, but it is outside this project and worth
+   saying out loud before anything is created.
+2. **Does `lab_insight` start with history or clean?** Copying `qc_intel` loses
+   its commit history; `git subtree split` keeps it and costs a little more.
+   History is worth having on a product heading for validation, where "when did
+   this change and why" is a question someone will ask.
