@@ -3,7 +3,7 @@
 Decisions taken: **two repositories**, the clinical product is called
 **lab_insight**, and the production app **keeps its LLM narrative for now**.
 
-Nothing is executed yet.
+Steps 1 to 3 are done; see the status note under Migration.
 
 Read `docs/DOMAINS.md` first: it establishes that the two workspaces serve
 different customers, different data and different regulations, and that three
@@ -175,14 +175,20 @@ The work is therefore building the new repository, not rearranging this one.
    always clinical.
 4. **Give it its own entry point and packaging.** The clinical bundle needs no
    PCA, PLS or Random Forest, so it should be far smaller than 683 MB.
-5. **In this repository:** delete `qc_intel/`, retire `home.py`, drop the
-   workspace chooser from `launcher.py` and the spec, and remove the clinical
-   sections from the docs. `DOMAINS.md` stays in both, because both need to know
-   where the line is.
+5. **In this repository: archive rather than delete.** `qc_intel/` stays where
+   it is, marked superseded, until the new repository has run against real work
+   for a while. Retire `home.py`, drop the workspace chooser from `launcher.py`
+   and the spec, and move the clinical sections of the docs across. `DOMAINS.md`
+   stays in both, because both need to know where the line is.
 
-Only after all five does this repository become single-purpose again. Until
-then, keep `qc_intel` here and working - deleting it before the new repository
-runs is how work gets lost.
+   Deleting is the last step and it is not urgent. A copy that still runs costs
+   almost nothing and is the cheapest possible insurance against discovering
+   that something did not come across.
+
+**Status:** steps 1 to 3 are done. `lab-insight` exists as a sibling directory
+with `trending/`, a vendored `tabular/`, the report plan and the synthetic study,
+and its 53 tests pass with no dependency on this repository. Step 4, its own
+packaging, and step 5, trimming this side, are open.
 
 Step 2 is the only one with real judgement in it. The rest is moving files.
 

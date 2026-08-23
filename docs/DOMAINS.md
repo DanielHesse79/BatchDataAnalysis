@@ -1,9 +1,17 @@
 # Two Domains, And The Words That Collide
 
-This repository serves two different customers asking different questions about
-different data. Three words mean different things in each, and the collisions
-are already in the code. This document fixes the vocabulary so the confusion
-stops spreading.
+This project grew to serve two different customers asking different questions
+about different data. Three words mean different things in each, and the
+collisions reached the code before anyone named them. This document fixes the
+vocabulary.
+
+**The lesson worth keeping:** do not keep adding capability to one application
+when you expect different users to use different parts of it. Each addition
+looks small, the shared shell looks like an economy, and the cost only becomes
+visible later - in vocabulary that means two things, in a schema that has to
+serve two purposes, and in a regulatory posture that cannot be different for
+different parts of one codebase. Splitting also forces the structure to be
+understood rather than assumed.
 
 ## The two domains
 
@@ -57,14 +65,17 @@ A manufacturing lot in the production domain; an analytical run or sample set in
 the clinical domain. The clinical code uses `run` throughout for this reason and
 should keep doing so.
 
-## Where the current code sits
+## Where the code sits
+
+The clinical half now lives in its own repository, `lab-insight`, a sibling
+directory to this one. It took its history with it and depends on nothing here.
 
 | Component | Domain |
 |---|---|
-| `app.py`, `analysis/`, `ui/`, `utils/` | Production |
-| `qc_intel/` | Clinical - analytical QC trending |
-| `docs/REPORT_AUTOMATION_PLAN.md`, `generate_bioanalytical_study.py` | Clinical - study reporting |
-| `home.py`, `launcher.py`, `packaging/` | Shared shell |
+| `app.py`, `analysis/`, `ui/`, `utils/` | Production - this repository |
+| `qc_intel/` | Clinical - **superseded** by `lab-insight/trending/`, kept here until the new repository has proven itself |
+| `docs/REPORT_AUTOMATION_PLAN.md`, `generate_bioanalytical_study.py` | Clinical - copies now live in `lab-insight` |
+| `home.py`, `launcher.py`, `packaging/` | Shared shell, to be trimmed on this side |
 
 ## The boundary that is not negotiable
 
