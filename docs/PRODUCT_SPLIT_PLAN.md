@@ -87,11 +87,10 @@ ragged-row recovery.
 
 **The important part is what the closure does *not* contain.** No `MergeResult`,
 no `merge_process_and_qc_data`, no batch identifiers - none of the production
-domain's logic. What both products share is exactly one coherent thing: reading
-a messy tabular file that a laboratory exported. It lives inside `analysis/`
-only because that is where it was written first.
+domain's logic. What both products share is file handling, which lives inside
+`analysis/` only because that is where it was written first.
 
-It is not quite one component, though. Checking who else uses those 28
+It is not one component, though. Checking who else uses those 28
 definitions shows two, tangled together:
 
 | | Used by | Nature |
@@ -112,53 +111,47 @@ tabular/
 
 ## Target structure
 
+Two repository roots.
+
 ```
-batch_insight/              production: process parameters -> release outcomes
-    app.py
-    analysis/
-    ui/
-    utils/
-    tests/
-    docs/
+Batch process data analysis/      production, this repository
+    app.py, analysis/, ui/, utils/, tests/, docs/
 
-lab_insight/                clinical: QC trending and study reporting
+lab_insight/                      clinical, new repository
     app.py
-    trending/               formerly qc_intel
-    report_engine/          currently unbuilt, see REPORT_AUTOMATION_PLAN.md
-    fileintake/             vendored, pinned; see the shared-component section
-    tests/
-    docs/
-
-packaging/                  builds either product
+    trending/                     from qc_intel
+    report_engine/                unbuilt; see REPORT_AUTOMATION_PLAN.md
+    tabular/                      vendored from this repository, pinned
+    tests/, docs/
 ```
 
-With two repositories these become two roots rather than two folders. This
-repository keeps its current layout and drops the clinical half.
+This repository keeps its current layout and drops the clinical half. No
+rearranging on this side.
 
-## The one real decision: how the shared component is held
+## The one real decision: how `tabular/` is held
 
-Extract the 28 definitions into a `fileintake/` package of their own, belonging
-to neither product. That much is clear from the measurement: it is one component
-with one job.
+The clinical product needs the file-reading and number-parsing code. With two
+repositories the choice is a shared dependency - a package published and
+installed by both - or a vendored copy.
 
-What is not obvious is how each product should then hold it.
-
-| | Shared dependency | Vendored copy each |
+| | Shared dependency | Vendored copy |
 |---|---|---|
-| A fix reaches both | immediately | when someone copies it |
-| Change control once one side is qualified | every fix touches the qualified product | each product moves on its own |
+| A fix reaches both | on the next release | when someone copies it |
+| Change control once the clinical side is qualified | every fix touches the qualified product | each product moves on its own |
 | Risk of silent divergence | none | real |
+| Infrastructure needed | a package index, versioning, releases | none |
 
-**Recommendation: one package, vendored into each product at a pinned version.**
+**Recommendation: vendor it, with the source commit recorded at the top of each
+module.**
 
-Sharing a live dependency is correct engineering right until one side is
-qualified. After that, a fix needed only by the unvalidated product still
-triggers impact assessment and regression testing on the validated one. Pinning
-gives the clinical product a frozen, documented version it can validate against,
-while the production product stays free to move.
+Sharing is correct engineering right until one side is qualified. After that, a
+fix needed only by the production product still triggers impact assessment on
+the validated one. Vendoring gives the clinical product a frozen copy it can
+validate against, and it needs no packaging infrastructure that does not exist
+yet.
 
-Write the version and the reason at the top of each vendored copy, so nobody
-helpfully refactors them back together.
+The cost is real and should be stated: a bug fixed in one copy is not fixed in
+the other. Record the origin commit so the divergence is at least visible.
 
 ## Migration, in order
 
