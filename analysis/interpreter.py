@@ -404,6 +404,11 @@ def stream_interpretation(
     }
 
     produced_any_text = False
+    # How the stream ended. Ollama's last chunk says why it stopped; "length"
+    # means the token limit cut the report off mid-sentence, which used to be
+    # handed on as a complete report.
+    finished = False
+    done_reason = None
 
     try:
         with open_chat_stream(base_url, request_payload) as response:
@@ -438,9 +443,14 @@ def stream_interpretation(
                         produced_any_text = True
                         yield clean_visible_stream_text(safe_text)
                     if should_stop:
+                        # A chat-template token: the model has finished the
+                        # report and started on scaffolding.
+                        finished = True
                         break
 
                 if chunk.get("done"):
+                    finished = True
+                    done_reason = chunk.get("done_reason")
                     break
 
             if pending_text:
@@ -463,21 +473,36 @@ def stream_interpretation(
                     "ministral-3:14b, or reduce the number of selected outcomes."
                 )
 
-    except requests.ConnectionError as error:
-        raise OllamaInterpreterError(
-            f"Could not reach Ollama at {base_url}. Start Ollama, then try again."
-        ) from error
+            if done_reason == "length":
+                token_limit = request_payload["options"].get("num_predict", RESPONSE_TOKEN_BUDGET)
+                raise OllamaInterpreterIncompleteError(
+                    f"{model} reached its {token_limit:,}-token limit before finishing the report."
+                )
+            if not finished:
+                raise OllamaInterpreterIncompleteError(
+                    "The stream from Ollama ended before the model said it had finished."
+                )
+
     except requests.RequestException as error:
         # Reaching here after text has streamed means generation was interrupted,
         # not that Ollama is missing. Saying "start Ollama" would be wrong, and
         # discarding the partial narrative would throw away usable output.
-        if not produced_any_text:
-            raise OllamaInterpreterError(
-                f"Could not reach Ollama at {base_url}. Start Ollama, then try again."
+        # requests re-raises a read timeout in the middle of a stream as a
+        # ConnectionError, so this cannot be decided by exception type alone.
+        if produced_any_text:
+            raise OllamaInterpreterIncompleteError(
+                f"Generation was interrupted after partial output: {error}"
             ) from error
 
-        raise OllamaInterpreterIncompleteError(
-            f"Generation was interrupted after partial output: {error}"
+        if isinstance(error, requests.Timeout) or "timed out" in str(error).lower():
+            raise OllamaInterpreterError(
+                f"Ollama at {base_url} did not answer within {REQUEST_TIMEOUT_SECONDS[1]} "
+                "seconds. A large model can take that long to load; try again, or pick a "
+                "smaller model."
+            ) from error
+
+        raise OllamaInterpreterError(
+            f"Could not reach Ollama at {base_url}. Start Ollama, then try again."
         ) from error
 
 

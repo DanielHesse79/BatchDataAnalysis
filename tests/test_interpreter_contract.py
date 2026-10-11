@@ -124,9 +124,10 @@ def test_the_system_prompt_treats_pack_content_as_data():
 class FakeStreamResponse:
     """Minimal stand-in for a streaming requests response."""
 
-    def __init__(self, chunks):
+    def __init__(self, chunks, then_raise=None):
         self.status_code = 200
         self._chunks = chunks
+        self._then_raise = then_raise
 
     def __enter__(self):
         return self
@@ -137,27 +138,108 @@ class FakeStreamResponse:
     def iter_lines(self, decode_unicode=False):
         for chunk in self._chunks:
             yield json.dumps(chunk)
+        if self._then_raise is not None:
+            raise self._then_raise
 
 
-def stream_one_interpretation(monkeypatch, chunks):
+def stream_one_interpretation(monkeypatch, chunks, then_raise=None, received=None):
+    """Stream one report from a fake Ollama; ``received`` collects the chunks
+    yielded before any exception, as the UI does."""
     from analysis import interpreter as interpreter_module
 
     monkeypatch.setattr(
         interpreter_module.requests,
         "post",
-        lambda *args, **kwargs: FakeStreamResponse(chunks),
+        lambda *args, **kwargs: FakeStreamResponse(chunks, then_raise),
     )
-    return list(
-        interpreter_module.stream_interpretation(
-            profile_result=None,
-            audit_result=None,
-            analysis_results={},
-            merged_dataframe=None,
-            outcomes=[],
-            model="gpt-oss:20b",
-            report_pack={"guardrails": []},
+    received = [] if received is None else received
+    for text in interpreter_module.stream_interpretation(
+        profile_result=None,
+        audit_result=None,
+        analysis_results={},
+        merged_dataframe=None,
+        outcomes=[],
+        model="gpt-oss:20b",
+        report_pack={"guardrails": []},
+    ):
+        received.append(text)
+    return received
+
+
+REPORT_START = {"message": {"role": "assistant", "content": "## Executive Summary\nYield tracked"}}
+
+
+def test_a_report_cut_off_by_the_token_limit_is_reported_as_incomplete(monkeypatch):
+    """done_reason "length" used to be ignored, so a truncated report looked finished."""
+    from analysis.interpreter import OllamaInterpreterIncompleteError
+
+    received = []
+    with pytest.raises(OllamaInterpreterIncompleteError, match="token limit"):
+        stream_one_interpretation(
+            monkeypatch, [REPORT_START, {"done": True, "done_reason": "length"}], received=received,
         )
+
+    assert "Executive Summary" in "".join(received)
+
+
+def test_a_stream_that_ends_without_done_is_reported_as_incomplete(monkeypatch):
+    from analysis.interpreter import OllamaInterpreterIncompleteError
+
+    with pytest.raises(OllamaInterpreterIncompleteError, match="ended before"):
+        stream_one_interpretation(monkeypatch, [REPORT_START])
+
+
+def test_a_normal_stop_is_not_incomplete(monkeypatch):
+    streamed = stream_one_interpretation(
+        monkeypatch, [REPORT_START, {"done": True, "done_reason": "stop"}],
     )
+
+    assert "Yield tracked" in "".join(streamed)
+
+
+def test_a_read_timeout_mid_stream_is_an_interruption_not_a_missing_ollama(monkeypatch):
+    """requests raises a mid-stream read timeout as ConnectionError; the first
+    handler caught it and told the user to start Ollama."""
+    import requests
+
+    from analysis.interpreter import OllamaInterpreterIncompleteError
+
+    with pytest.raises(OllamaInterpreterIncompleteError, match="interrupted"):
+        stream_one_interpretation(
+            monkeypatch,
+            [REPORT_START],
+            then_raise=requests.ConnectionError("Read timed out. (read timeout=300)"),
+        )
+
+
+def test_a_timeout_before_any_text_does_not_say_ollama_is_missing(monkeypatch):
+    import requests
+
+    from analysis.interpreter import OllamaInterpreterError, OllamaInterpreterIncompleteError
+
+    with pytest.raises(OllamaInterpreterError, match="did not answer") as raised:
+        stream_one_interpretation(monkeypatch, [], then_raise=requests.ReadTimeout("timed out"))
+
+    assert not isinstance(raised.value, OllamaInterpreterIncompleteError)
+
+
+def test_an_unreachable_ollama_still_says_so(monkeypatch):
+    import requests
+
+    from analysis import interpreter as interpreter_module
+
+    def refuse(*args, **kwargs):
+        raise requests.ConnectionError("Connection refused")
+
+    monkeypatch.setattr(interpreter_module.requests, "post", refuse)
+
+    with pytest.raises(interpreter_module.OllamaInterpreterError, match="Start Ollama"):
+        list(
+            interpreter_module.stream_interpretation(
+                profile_result=None, audit_result=None, analysis_results={},
+                merged_dataframe=None, outcomes=[], model="m", report_pack={"guardrails": []},
+            )
+        )
 
 
 def test_a_model_that_only_reasons_raises_instead_of_returning_nothing(monkeypatch):

@@ -32,6 +32,7 @@ import time
 from analysis.interpreter import (
     RESPONSE_TOKEN_BUDGET,
     OllamaInterpreterError,
+    OllamaInterpreterIncompleteError,
     build_ollama_messages,
     fit_summary_to_context,
     sanitize_interpretation_text,
@@ -64,6 +65,7 @@ class Attempt:
     warnings: list[str]
     seconds: float
     model: str = ""
+    complete: bool = True
 
 
 @dataclass(frozen=True)
@@ -111,6 +113,32 @@ class LoopResult:
             f"Tried {rungs} ({total:.0f}s) and {len(self.warnings)} check(s) still "
             f"fail. The report below is the best attempt, not a clean one.{kept}"
         )
+
+
+def incomplete_warning(reason: str) -> str:
+    """The warning attached to a report that generation cut off."""
+    return (
+        f"The report is incomplete: {reason} The text is partial, so a section, an "
+        "outcome or a caveat may be missing even where the other checks pass."
+    )
+
+
+def collect_stream(stream: Callable[..., Iterable[str]], **kwargs) -> tuple[str, str | None]:
+    """Join a stream, keeping partial text if generation is cut off.
+
+    Returns the text and, when it was cut off, why. Validation alone cannot see
+    a missing ending: a report that stops inside its last section still has
+    every heading, so a truncated report used to pass as clean.
+    """
+    chunks: list[str] = []
+    try:
+        for chunk in stream(**kwargs):
+            chunks.append(chunk)
+    except OllamaInterpreterIncompleteError as error:
+        if not "".join(chunks).strip():
+            raise
+        return "".join(chunks), str(error)
+    return "".join(chunks), None
 
 
 def missing_headings(text: str) -> list[str]:
@@ -207,26 +235,24 @@ def generate_validated_report(
         started = time.monotonic()
         try:
             if plan.by_section:
-                text = generate_by_section(
+                text, cut_off = generate_by_section(
                     summary, plan.model, base_url, stream, outcomes,
                 )
             else:
-                text = sanitize_interpretation_text(
-                    "".join(
-                        stream(
-                            profile_result=None,
-                            audit_result=None,
-                            analysis_results={},
-                            merged_dataframe=None,
-                            outcomes=outcomes,
-                            model=plan.model,
-                            base_url=base_url,
-                            report_pack=summary,
-                            messages=plan.messages,
-                            option_overrides=plan.overrides,
-                        )
-                    )
+                raw_text, cut_off = collect_stream(
+                    stream,
+                    profile_result=None,
+                    audit_result=None,
+                    analysis_results={},
+                    merged_dataframe=None,
+                    outcomes=outcomes,
+                    model=plan.model,
+                    base_url=base_url,
+                    report_pack=summary,
+                    messages=plan.messages,
+                    option_overrides=plan.overrides,
                 )
+                text = sanitize_interpretation_text(raw_text)
         except OllamaInterpreterError:
             # The first rung failing means Ollama is unreachable or the model
             # wrote nothing; there is nothing to repair, so let the caller see it.
@@ -236,7 +262,11 @@ def generate_validated_report(
 
         elapsed = time.monotonic() - started
         warnings = validate_interpretation_text(text, summary).warnings
-        attempts.append(Attempt(plan.strategy, text, warnings, elapsed, plan.model))
+        if cut_off:
+            warnings = [incomplete_warning(cut_off), *warnings]
+        attempts.append(
+            Attempt(plan.strategy, text, warnings, elapsed, plan.model, complete=not cut_off)
+        )
 
         if not warnings:
             break
@@ -245,9 +275,14 @@ def generate_validated_report(
     if not attempts:
         return LoopResult(text="", warnings=["No report was generated."])
 
-    # Fewest warnings wins; ties go to the earliest attempt, which is the one
-    # written under the least constraint and so usually reads best.
-    best = min(attempts, key=lambda attempt: (len(attempt.warnings), attempts.index(attempt)))
+    # A finished report beats a cut-off one whatever the counts say: the checks
+    # cannot see what is missing from the end. Then fewest warnings wins; ties
+    # go to the earliest attempt, which is the one written under the least
+    # constraint and so usually reads best.
+    best = min(
+        attempts,
+        key=lambda attempt: (not attempt.complete, len(attempt.warnings), attempts.index(attempt)),
+    )
     return LoopResult(
         text=best.text,
         warnings=list(best.warnings),
@@ -256,20 +291,33 @@ def generate_validated_report(
     )
 
 
-def replaying_generator(first_text: str, generate: Callable[..., Iterable[str]] | None = None):
+def replaying_generator(
+    first_text: str,
+    generate: Callable[..., Iterable[str]] | None = None,
+    cut_off: OllamaInterpreterIncompleteError | None = None,
+):
     """Feed an already-generated report in as the loop's first attempt.
 
     The UI streams the first report so the user watches it appear. Handing that
     text back here lets the loop start from it instead of paying for it twice,
     and keeps every escalation decision in this module rather than the panel.
+
+    ``cut_off`` is the error that ended the original stream, if one did. It is
+    raised again after the text, so the loop treats the replay exactly as it
+    would the live stream - partial, and ranked below any finished attempt.
     """
     stream = generate or stream_interpretation
     state = {"replayed": False}
 
+    def replay():
+        yield first_text
+        if cut_off is not None:
+            raise cut_off
+
     def generate_or_replay(**kwargs):
         if not state["replayed"]:
             state["replayed"] = True
-            return [first_text]
+            return replay()
         return stream(**kwargs)
 
     return generate_or_replay
@@ -308,40 +356,43 @@ def generate_by_section(
     base_url: str | None,
     stream: Callable[..., Iterable[str]],
     outcomes: list[str],
-) -> str:
+) -> tuple[str, str | None]:
     """Build the report one section at a time and assemble it here.
 
     The most expensive rung, and the only one that cannot omit a section: the
     headings are written by this function, not by the model. Reached only when
     the skeleton has already failed twice.
+
+    Returns the report and, if any section was cut off, why.
     """
     parts = []
+    cut_off_reasons = []
     for heading in REQUIRED_HEADINGS:
-        body = sanitize_interpretation_text(
-            "".join(
-                stream(
-                    profile_result=None,
-                    audit_result=None,
-                    analysis_results={},
-                    merged_dataframe=None,
-                    outcomes=outcomes,
-                    model=model,
-                    base_url=base_url,
-                    report_pack=summary,
-                    messages=build_section_messages(summary, heading, outcomes),
-                    option_overrides={
-                        "temperature": REPAIR_TEMPERATURE,
-                        "num_predict": SECTION_TOKEN_BUDGET,
-                    },
-                )
-            )
+        raw_body, cut_off = collect_stream(
+            stream,
+            profile_result=None,
+            audit_result=None,
+            analysis_results={},
+            merged_dataframe=None,
+            outcomes=outcomes,
+            model=model,
+            base_url=base_url,
+            report_pack=summary,
+            messages=build_section_messages(summary, heading, outcomes),
+            option_overrides={
+                "temperature": REPAIR_TEMPERATURE,
+                "num_predict": SECTION_TOKEN_BUDGET,
+            },
         )
+        if cut_off:
+            cut_off_reasons.append(f"'{heading.lstrip('# ')}': {cut_off}")
+        body = sanitize_interpretation_text(raw_body)
         # A model asked for a section sometimes writes the heading anyway.
         if body.startswith(heading):
             body = body[len(heading):].lstrip()
         parts.append(f"{heading}\n{body.strip()}\n")
 
-    return "\n".join(parts)
+    return "\n".join(parts), ("; ".join(cut_off_reasons) or None)
 
 
 def plan_attempt(

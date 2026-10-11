@@ -6,12 +6,14 @@ logic is tested rather than a model's mood.
 
 import pytest
 
+from analysis.interpreter import OllamaInterpreterIncompleteError
 from analysis.narrative_loop import (
     Attempt,
     LoopResult,
     generate_validated_report,
     missing_headings,
     plan_attempt,
+    replaying_generator,
 )
 from analysis.report_validator import REQUIRED_HEADINGS
 
@@ -181,9 +183,67 @@ def test_section_generation_writes_the_headings_itself():
     def generate(**kwargs):
         return ["Body text for whichever section was asked for.\n"]
 
-    text = generate_by_section(PACK, "test", None, generate, ["yield_g_L"])
+    text, cut_off = generate_by_section(PACK, "test", None, generate, ["yield_g_L"])
 
     assert missing_headings(text) == []
+    assert cut_off is None
+
+
+# A report cut off inside its last section still has every heading, so the
+# validator alone passed it as clean, and the UI showed it with the green
+# "no obvious hallucination" message.
+CUT_OFF = OllamaInterpreterIncompleteError("test-model reached its 6,000-token limit.")
+
+
+def test_a_cut_off_report_is_never_accepted_even_when_every_check_passes():
+    generate = scripted_generator(CLEAN_REPORT)
+
+    result = generate_validated_report(
+        PACK, model="test", max_attempts=1,
+        generate=replaying_generator(CLEAN_REPORT, generate, cut_off=CUT_OFF),
+    )
+
+    assert not result.accepted
+    assert "incomplete" in result.warnings[0]
+    assert "6,000-token limit" in result.warnings[0]
+
+
+def test_a_cut_off_report_is_repaired_into_a_finished_one():
+    generate = scripted_generator(CLEAN_REPORT)
+
+    result = generate_validated_report(
+        PACK, model="test", generate=replaying_generator(CLEAN_REPORT, generate, cut_off=CUT_OFF),
+    )
+
+    assert result.accepted
+    assert [attempt.complete for attempt in result.attempts] == [False, True]
+
+
+def test_a_finished_report_outranks_a_cut_off_one_with_fewer_warnings():
+    """The checks cannot see what is missing from the end of a cut-off report."""
+    two_warnings = UNGROUNDED_REPORT + "\nThe effect will increase output.\n"
+
+    result = generate_validated_report(
+        PACK, model="test", max_attempts=2,
+        generate=replaying_generator(
+            CLEAN_REPORT, scripted_generator(two_warnings), cut_off=CUT_OFF,
+        ),
+    )
+
+    assert "will increase" in result.text
+    assert result.strategy == "repair"
+    assert len(result.warnings) == 2
+
+
+def test_a_cut_off_live_stream_keeps_its_partial_text():
+    def generate(**kwargs):
+        yield CLEAN_REPORT
+        raise CUT_OFF
+
+    result = generate_validated_report(PACK, model="test", max_attempts=1, generate=generate)
+
+    assert "Executive Summary" in result.text
+    assert not result.accepted
 
 
 def test_the_driver_section_prompt_names_every_outcome():

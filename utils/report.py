@@ -30,7 +30,6 @@ from reportlab.platypus import (
 from analysis.evidence import build_operating_window_hints
 
 
-MAX_INTERPRETATION_PARAGRAPHS = 45
 MAX_APPENDIX_ROWS = 220
 # A single cell taller than one page aborts the whole PDF build, so cell text is
 # capped well below that.
@@ -513,17 +512,19 @@ def build_pca_scatter_image(
 
 
 def markdown_to_report_blocks(markdown_text: str) -> list[tuple[str, str]]:
-    """Convert a small markdown subset to report paragraphs."""
+    """Convert a small markdown subset to report paragraphs.
+
+    Every line is kept. A cap of 45 lines used to cut a normal six-section
+    report short, and the section it cut was the last one - the data quality
+    and confidence notes, which are the caveats. The generation token budget
+    already bounds the length.
+    """
     blocks: list[tuple[str, str]] = []
-    paragraph_count = 0
 
     for raw_line in markdown_text.splitlines():
         line = raw_line.strip()
         if not line:
             continue
-        if paragraph_count >= MAX_INTERPRETATION_PARAGRAPHS:
-            blocks.append(("Interpretation truncated for PDF length.", "body"))
-            break
 
         style_name = "body"
         if line.startswith("##"):
@@ -537,7 +538,6 @@ def markdown_to_report_blocks(markdown_text: str) -> list[tuple[str, str]]:
 
         line = re.sub(r"\*\*(.*?)\*\*", r"<b>\1</b>", escape_ascii(line))
         blocks.append((line, style_name))
-        paragraph_count += 1
 
     return blocks
 

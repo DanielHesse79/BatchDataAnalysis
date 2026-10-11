@@ -12,7 +12,11 @@ from analysis.interpreter import (
     sanitize_interpretation_text,
     stream_interpretation,
 )
-from analysis.narrative_loop import generate_validated_report, replaying_generator
+from analysis.narrative_loop import (
+    generate_validated_report,
+    incomplete_warning,
+    replaying_generator,
+)
 from analysis.report_validator import validate_interpretation_text
 from utils.format import datetime_stamp_for_filename
 from utils.report import (
@@ -164,8 +168,10 @@ def render_explanation_controls(
         value=True,
         key="repair_interpretation",
         help=(
-            "Re-asks the model to correct what the checks caught, up to twice. "
-            "A report that still fails is shown with its warnings, never as clean."
+            "Re-asks the model to correct what the checks caught, up to four more "
+            "times: a targeted repair, a pre-filled skeleton, then one section at a "
+            "time, the last try on another local model if you have one. A report "
+            "that still fails is shown with its warnings, never as clean."
         ),
     )
 
@@ -190,6 +196,7 @@ def render_explanation_controls(
         # Otherwise the narrative on screen differs from the downloaded and PDF copies.
         stream_placeholder = st.empty()
         streamed_chunks: list[str] = []
+        cut_off_error: OllamaInterpreterIncompleteError | None = None
         try:
             with st.spinner(f"Generating interpretation with {selected_model}..."):
                 with stream_placeholder.container():
@@ -210,11 +217,11 @@ def render_explanation_controls(
                         )
                     )
         except OllamaInterpreterIncompleteError as error:
+            # Kept, not shown: the app reruns below, which would clear a warning
+            # drawn here. The stored validation warnings carry it instead, so the
+            # page, the Markdown download and the PDF all say the text is partial.
             stream_placeholder.empty()
-            st.warning(
-                f"{error} The partial narrative was kept, but it is incomplete - "
-                "generate again for a full report."
-            )
+            cut_off_error = error
         except OllamaInterpreterError as error:
             stream_placeholder.empty()
             st.error(str(error))
@@ -224,6 +231,8 @@ def render_explanation_controls(
         if interpretation_text:
             narrative = sanitize_interpretation_text(interpretation_text)
             warnings = validate_interpretation_text(narrative, report_pack).warnings
+            if cut_off_error is not None:
+                warnings = [incomplete_warning(str(cut_off_error)), *warnings]
 
             # The streamed report is handed to the loop as its first attempt, so
             # a repair costs only the attempts it actually needs.
@@ -233,7 +242,7 @@ def render_explanation_controls(
                         report_pack,
                         model=selected_model,
                         base_url=base_url,
-                        generate=replaying_generator(narrative),
+                        generate=replaying_generator(narrative, cut_off=cut_off_error),
                         # Offer the other local models as a last resort. Their
                         # failures are complementary, not merely different.
                         fallback_models=[

@@ -456,6 +456,13 @@ the line says so:
 > Tried base then skeleton then sections (168s) and 1 check(s) still fail. The
 > report below is the best attempt, not a clean one.
 
+**A cut-off report is never presented as finished either.** When the model
+reaches its token limit, or the connection drops mid-report, the partial text is
+kept but the first warning says it is incomplete, on screen, in the Markdown
+download and in the PDF. The checks cannot see what is missing from the end, so
+a finished report is always kept over a cut-off one, whatever their warning
+counts.
+
 Turn the repair off if you would rather see the first attempt and its warnings
 without waiting. A clean first attempt costs nothing either way; only a failed
 one triggers further generation.

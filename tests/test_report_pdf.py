@@ -61,6 +61,22 @@ def test_pdf_honours_the_outcome_direction_override(monkeypatch, synthetic_pipel
     assert captured_objectives["value"] == overrides
 
 
+def test_a_full_length_narrative_keeps_its_caveats_section():
+    """A 45-line cap dropped the last section, which is the one with the caveats."""
+    from analysis.report_validator import REQUIRED_HEADINGS
+    from utils.report import markdown_to_report_blocks
+
+    narrative = "\n".join(
+        f"{heading}\n" + "\n".join(f"- Point {index} under {heading}." for index in range(12))
+        for heading in REQUIRED_HEADINGS
+    )
+
+    blocks = markdown_to_report_blocks(narrative)
+
+    assert blocks[-1][0] == "- Point 11 under ## Data Quality and Confidence Notes."
+    assert not any("truncated" in text for text, _ in blocks)
+
+
 def test_very_long_cell_text_is_truncated_instead_of_breaking_the_layout():
     """A cell taller than one page aborts the whole ReportLab build."""
     dataframe = pd.DataFrame({"variable": ["x" * 5_000], "note": ["y" * 12_000]})
