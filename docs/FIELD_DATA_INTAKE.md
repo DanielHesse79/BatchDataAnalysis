@@ -9,7 +9,8 @@ The intake layer is designed to make messy input visible before analysis.
 - Excel sheet selection.
 - Header rows below title or metadata rows.
 - Blank or duplicate column names.
-- Numeric text such as `100 g`, `12,5 %`, `<20 ppm`, and `7.5 h`.
+- Numeric text such as `100 g`, `12,5 %`, `<20 ppm`, `7.5 h`, `1.2E+05` and
+  `5 x 10^6`.
 - Inconsistent batch ID formatting such as `MB-001`, `mb001`, and ` MB001 `.
 - Duplicate batch IDs with user-selected resolution.
 - Long-format tables such as `batch_id | test_name | result`.
@@ -56,6 +57,31 @@ specs_windows
 Use `Process and QC data are in the same Excel workbook`, upload the workbook
 once, then choose the process sheet in the process intake panel and the QC sheet
 in the QC intake panel.
+
+## How Numbers In Text Are Read
+
+A text column is converted to numbers only when most of its values parse. The
+**Numeric parsing log** lists every converted column and, under `notes`, any
+reading that was not obvious.
+
+- **Commas are decided per column.** `95,5` can only be a decimal comma and
+  `1,234.5` only a thousands separator, but `1,250` can be either. When the
+  column has no unambiguous example, the values without a comma decide: next
+  to `980`, `1,250` is 1250; next to `1.487`, `1,523` is 1.523. When nothing in
+  the column settles it, the commas are read as decimals and a warning asks you
+  to check the source file.
+- **Dates are never numbers.** A column of dates or timestamps is left as
+  written, whatever it is called, so the audit and the time-ordered validation
+  can read it as dates. It used to become its year, so `2024-01-15` read as
+  2024.
+- **Clock values become hours** when a whole column is written that way:
+  `08:30` is 8.5 and `1:30:00` is 1.5. A lone `h:mm` value or a ratio such as
+  `1:100` in another column is left blank.
+- **Ranges are left blank.** `6.8-7.2` has no single value. It used to be read
+  as 6.8. Each column with ranges gets a warning, so you can replace them with
+  the measured value.
+- **Powers of ten keep their exponent**: `5 x 10^6`, `5x10**6` and `5 × 10⁶` are
+  all 5000000.
 
 ## Duplicate Handling
 
