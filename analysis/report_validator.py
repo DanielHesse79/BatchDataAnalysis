@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import math
 import re
 from typing import Any
 
@@ -223,7 +224,17 @@ GENERIC_NAME_TOKENS = {
 }
 
 SMALLEST_CHECKED_NUMBER = 10.0
-NUMBER_IN_TEXT = re.compile(r"(?<![A-Za-z0-9_.-])(-?\d+(?:\.\d+)?)(?![A-Za-z0-9_-])")
+# Digits with optional thousands groups, decimals and exponent. Whether a match
+# is a number at all - not part of `day7`, BR-3 or a decimal's tail - is decided
+# by the characters around it; see extract_numbers.
+NUMBER_TOKEN = re.compile(r"\d{1,3}(?:,\d{3})+(?:\.\d+)?(?![\d,])|\d+(?:\.\d+)?(?:[eE][+-]?\d+)?")
+ORDINAL_SUFFIX = re.compile(r"(?:st|nd|rd|th)\b", re.IGNORECASE)
+# A number the report itself marks as approximate, such as "~32 ppm" for a mean
+# of 31.4, is allowed one unit of slack in its last digit.
+APPROXIMATE_MARKER = re.compile(
+    r"(?:~|≈|\b(?:approx\.?|approximately|about|around|roughly|nearly))\s*-?$",
+    re.IGNORECASE,
+)
 MAX_REPORTED_NUMBERS_LISTED = 6
 # A section shorter than this is empty in substance whatever its heading says.
 # Kept low on purpose: a terse but real section - "No spec/window file was
@@ -242,8 +253,8 @@ def collect_pack_numbers(value: Any, found: set[float] | None = None) -> set[flo
     if isinstance(value, (int, float)):
         found.add(float(value))
     elif isinstance(value, str):
-        for match in NUMBER_IN_TEXT.finditer(value):
-            found.add(float(match.group(1)))
+        for number in extract_numbers(value):
+            found.add(number.value)
     elif isinstance(value, dict):
         for item in value.values():
             collect_pack_numbers(item, found)
@@ -254,19 +265,128 @@ def collect_pack_numbers(value: Any, found: set[float] | None = None) -> set[flo
     return found
 
 
-def number_is_grounded(reported: float, pack_numbers: set[float], decimals: int) -> bool:
+@dataclass(frozen=True)
+class NumberInText:
+    """One number as written in a report."""
+
+    literal: str
+    value: float
+    decimals: int
+    signed: bool
+    approximate: bool = False
+
+
+def extract_numbers(text: str) -> list[NumberInText]:
+    """Every number written in ``text``, read the way a person would read it.
+
+    - ``12-48`` and ``36.5-37.5`` are ranges: both ends are numbers, neither is
+      negative. A minus sign counts only after a space, bracket or operator.
+    - ``120rpm``, ``37C`` and ``5x`` are numbers with a unit attached;
+      ``3rd`` and ``10th`` are ordinals and are skipped.
+    - ``1,250`` is one thousand two hundred and fifty, and ``1.2e5`` is 120000.
+    - Digits inside a name - ``Q2``, ``day7``, ``x10``, ``BR-3``, ``RM-005``,
+      ``titer_day7_g_L`` - are not numbers.
+    """
+    numbers = []
+    for match in NUMBER_TOKEN.finditer(text):
+        start, end = match.span()
+        before = text[start - 1] if start > 0 else ""
+        after = text[end] if end < len(text) else ""
+
+        if before.isalpha() or before in ("_", "."):
+            continue
+        if after == "_" or (after == "." and text[end + 1 : end + 2].isdigit()):
+            continue
+
+        literal = match.group(0)
+        signed = False
+        if before == "-":
+            ahead_of_sign = text[start - 2] if start > 1 else ""
+            if ahead_of_sign.isalpha() or ahead_of_sign == "_":
+                continue  # BR-3, RM-005: a level name, not a number
+            signed = not (ahead_of_sign.isdigit() or ahead_of_sign in (")", "%"))
+
+        if after.isalpha() and ORDINAL_SUFFIX.match(text, end) and "." not in literal:
+            continue
+
+        plain = literal.replace(",", "")
+        mantissa = re.split(r"[eE]", plain)[0]
+        decimals = len(mantissa.split(".")[1]) if "." in mantissa else 0
+        if re.search(r"[eE]", plain):
+            decimals = max(0, decimals - int(re.split(r"[eE]", plain)[1]))
+        value = float(plain)
+        numbers.append(
+            NumberInText(
+                literal=("-" if signed else "") + literal,
+                value=-value if signed else value,
+                decimals=decimals,
+                signed=signed,
+                approximate=bool(APPROXIMATE_MARKER.search(text[max(0, start - 16) : start])),
+            )
+        )
+    return numbers
+
+
+def number_is_grounded(
+    reported: float,
+    pack_numbers: set[float],
+    decimals: int,
+    signed: bool = True,
+    approximate: bool = False,
+) -> bool:
     """Whether a reported number matches something the pack actually contains.
 
     A pack value counts as a match when rounding it to the precision the report
     used produces the reported number - which is how a person writes 8.15 as
     8.2. Percentages are checked in both directions because a pack may hold a
-    fraction where the report writes a percent.
+    fraction where the report writes a percent; the precision moves with the
+    decimal point, so 47% has to match a pack value that rounds to 0.47. It
+    used to be compared at the report's precision, where 0.47 rounds to 0 and
+    matched every small value in the pack: 0 of 500 random integers were
+    flagged against a real evidence pack.
+
+    An unsigned number may match a negative pack value, because "a decrease of
+    5.6" is how a person writes a delta of -5.6. A number the report writes
+    with a minus sign has to match the sign as well.
+
+    A whole number may also sit within half a percent of a pack value, which
+    is how 1248 gets written as 1,250. A number with decimals gets no such
+    slack: its precision already says how it was rounded, and the 0.5% band let
+    a garbled 6.994 pass as the 7.0 next to it.
+
+    Truncating counts as well as rounding, at the pack value's own scale. Local
+    models write 277.879 as 277.8 and 87.996 as 87.99: across seven reports from
+    four local models, seven of the eight numbers that rounding alone flagged
+    were truncations, and flagging them would teach the reader to ignore the
+    warning. A percent truncated from a fraction is not accepted - 0.638 does
+    not ground "63%" - because that doubles the window for every number.
+
+    A number the report marks as approximate ("~31", "about 31") may be off by
+    one unit in its last digit in either direction.
     """
-    for candidate in (reported, reported / 100.0, reported * 100.0):
+    candidates = (
+        (reported, decimals),
+        (reported / 100.0, decimals + 2),
+        (reported * 100.0, max(decimals - 2, 0)),
+    )
+    for candidate, precision in candidates:
+        same_scale = candidate == reported
+        scale = 10.0 ** precision
         for pack_number in pack_numbers:
-            if round(pack_number, decimals) == round(candidate, decimals):
+            compared = pack_number if signed else abs(pack_number)
+            if round(compared, precision) == round(candidate, precision):
                 return True
-            if abs(pack_number) > 1e-9 and abs(pack_number - candidate) / abs(pack_number) < 0.005:
+            if same_scale:
+                truncated = math.trunc(compared * scale + math.copysign(1e-9, compared)) / scale
+                if round(truncated, precision) == round(candidate, precision):
+                    return True
+            if approximate and abs(compared - candidate) < 10.0 ** -precision:
+                return True
+            if (
+                decimals == 0
+                and abs(compared) > 1e-9
+                and abs(compared - candidate) / abs(compared) < 0.005
+            ):
                 return True
     return False
 
@@ -290,18 +410,21 @@ def check_numbers_exist_in_pack(report_text: str, report_pack: dict[str, Any]) -
     level_numbers = collect_pack_numbers(level_text)
 
     ungrounded: list[str] = []
-    for match in NUMBER_IN_TEXT.finditer(report_text):
-        literal = match.group(1)
-        reported = float(literal)
-        if abs(reported) < SMALLEST_CHECKED_NUMBER:
+    for number in extract_numbers(report_text):
+        # Small whole numbers are counts, ordinals and list markers ("the top 3
+        # drivers"). Anything with a decimal point is a statistic - R2, Q2,
+        # Ppk, a correlation - and those are exactly the figures a reader takes
+        # on trust, so they are checked whatever their size.
+        if number.decimals == 0 and abs(number.value) < SMALLEST_CHECKED_NUMBER:
             continue
-        if reported in level_numbers:
+        if number.value in level_numbers or abs(number.value) in level_numbers:
             continue
 
-        decimals = len(literal.split(".")[1]) if "." in literal else 0
-        if not number_is_grounded(reported, pack_numbers, decimals):
-            if literal not in ungrounded:
-                ungrounded.append(literal)
+        if not number_is_grounded(
+            number.value, pack_numbers, number.decimals, number.signed, number.approximate
+        ):
+            if number.literal not in ungrounded:
+                ungrounded.append(number.literal)
 
     if not ungrounded:
         return []

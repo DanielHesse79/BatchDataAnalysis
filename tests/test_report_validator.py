@@ -1,3 +1,5 @@
+import pytest
+
 from analysis.report_validator import validate_interpretation_text
 
 
@@ -170,6 +172,125 @@ def test_counts_and_ordinals_are_not_treated_as_statistics():
 
 def test_level_names_carrying_digits_are_left_to_the_categorical_check():
     assert numeric_warnings("Batches from BR-3 ran lower.") == []
+
+
+# The toy pack above has no small values, which is the only reason the invented
+# 23.7% was ever flagged. Against a real pack the old check divided 23.7 by 100,
+# rounded 0.237 to one decimal, and matched any pack value between 0.15 and
+# 0.25: 0 of 500 random integers were flagged. These run against the evidence
+# pack the app builds from the synthetic data.
+#
+# The pack holds about 750 numbers, so some invented values coincide with a
+# real one - 23.7% matches a fraction of 0.237 in it, and 47% one of 0.47. The
+# check can say a number is nowhere in the analysis; it cannot say a number
+# that is in the analysis was attached to the right variable.
+@pytest.fixture(scope="module")
+def synthetic_pack(synthetic_pipeline):
+    from analysis.evidence import build_report_pack
+
+    return build_report_pack(
+        profile_result=synthetic_pipeline["profile"],
+        audit_result=synthetic_pipeline["audit"],
+        analysis_results=synthetic_pipeline["analysis"],
+        merged_dataframe=synthetic_pipeline["dataframe"],
+        outcomes=synthetic_pipeline["outcomes"],
+    )
+
+
+@pytest.mark.parametrize(
+    "sentence",
+    [
+        "Yield improved by 31.7% after the change.",
+        "Purity rose by 63% in the best quartile.",
+        "PLS reached Q2 = 0.913 for yield.",
+        "Capability was Ppk 1.674.",
+        "The delta was -35 g/L.",
+        "Feed rate between 12.3-48.7 mL/h looked best.",
+        "Agitation at 1,250rpm was associated with lower HCP.",
+    ],
+)
+def test_an_invented_number_is_flagged_against_a_real_pack(synthetic_pack, sentence):
+    from analysis.report_validator import check_numbers_exist_in_pack
+
+    assert check_numbers_exist_in_pack(sentence, synthetic_pack)
+
+
+def test_numbers_copied_from_a_real_pack_are_accepted(synthetic_pack):
+    """The check is worthless if it fires on numbers the analysis produced."""
+    from analysis.report_validator import check_numbers_exist_in_pack
+
+    yield_pack = synthetic_pack["outcomes"]["yield_g_L"]
+    top_driver = yield_pack["top_drivers"][0]
+    score = float(top_driver["combined_score"])
+    text = (
+        f"`{top_driver['process_variable']}` leads with a combined score of {score:.3f} "
+        f"({score * 100:.1f}% of the top score) across "
+        f"{synthetic_pack['data_profile']['matched_batch_count']} batches."
+    )
+
+    assert check_numbers_exist_in_pack(text, synthetic_pack) == []
+
+
+@pytest.mark.parametrize(
+    ("pack_value", "written"),
+    # From real gemma4 and ministral-3 reports on the mock-spec and synthetic packs.
+    [
+        (277.879, "277.8"),
+        (-71.397, "-71.39"),
+        (211.154, "211.1"),
+        (87.996, "87.99"),
+        (159.962, "159.9"),
+    ],
+)
+def test_a_truncated_pack_value_is_not_a_fabrication(pack_value, written):
+    from analysis.report_validator import check_numbers_exist_in_pack
+
+    pack = {"outcomes": {"x": {"mean": pack_value}}}
+
+    assert check_numbers_exist_in_pack(f"The mean was {written}.", pack) == []
+
+
+def test_a_flipped_sign_is_still_flagged():
+    from analysis.report_validator import check_numbers_exist_in_pack
+
+    pack = {"outcomes": {"x": {"refined_lift": 0.21}}}
+
+    assert check_numbers_exist_in_pack("Refined lift = 0.21.", pack) == []
+    assert check_numbers_exist_in_pack("Refined lift = -0.21.", pack)
+
+
+def test_a_number_marked_approximate_gets_one_unit_of_slack():
+    from analysis.report_validator import check_numbers_exist_in_pack
+
+    pack = {"outcomes": {"hcp_ppm": {"outcome_mean": 31.4}}}
+
+    assert check_numbers_exist_in_pack("HCP fell to ~32 ppm.", pack) == []
+    assert check_numbers_exist_in_pack("HCP fell to about 32 ppm.", pack) == []
+    assert check_numbers_exist_in_pack("HCP fell to 32 ppm.", pack)
+    assert check_numbers_exist_in_pack("HCP fell to ~29 ppm.", pack)
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        ("between 36.5-37.5 deg C", [36.5, 37.5]),
+        ("a range of 12-48 h", [12.0, 48.0]),
+        ("fell by -2.5 units", [-2.5]),
+        ("(-2.5)", [-2.5]),
+        ("at 120rpm and 37C", [120.0, 37.0]),
+        ("1,250 batches", [1250.0]),
+        ("about 1.2e5 cells", [120000.0]),
+        ("the 3rd and 10th batches", []),
+        ("BR-3 and RM-005", []),
+        ("`titer_day7_g_L`, Q2 and x10", []),
+        ("41.461,50.549", [41.461, 50.549]),
+        ("Version 1.2.3", []),
+    ],
+)
+def test_numbers_are_read_the_way_a_person_reads_them(text, expected):
+    from analysis.report_validator import extract_numbers
+
+    assert [number.value for number in extract_numbers(text)] == expected
 
 
 def test_a_heading_with_nothing_under_it_is_reported():

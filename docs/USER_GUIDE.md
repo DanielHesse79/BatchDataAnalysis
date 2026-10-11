@@ -406,6 +406,26 @@ What is checked:
 Python computes the facts and the model narrates them, so a figure the analysis
 never produced is a fabrication however plausible it reads.
 
+How it reads a number:
+
+- Rounding and truncating are allowed at the precision the report used, so
+  41.57 may be written 41.6 or 41.5. A percent may stand for a fraction in the
+  pack (47% for 0.47), but only at the matching precision. A number marked
+  approximate ("~32", "about 32") gets one more unit of slack.
+- A number written with a minus sign must match the sign in the pack. One
+  written without may match a negative value ("a decrease of 5.6").
+- Every number with a decimal point is checked, however small: R2, Q2, Ppk and
+  correlations are the figures a reader takes on trust. Whole numbers below 10
+  are skipped as counts and list markers.
+- Ranges such as `36.5-37.5`, units written against the number (`120rpm`),
+  thousands separators (`1,250`) and exponents (`1.2e5`) are read as numbers.
+  Digits inside names (`Q2`, `day7`, `BR-3`) are not.
+
+What it cannot do: the evidence pack holds several hundred numbers, so an
+invented value sometimes coincides with a real one, and a real number attached
+to the wrong variable passes. A clean result means no figure was made up from
+nothing, not that every figure is in the right place.
+
 ### The repair loop
 
 When a check fails and **Repair the report if the checks fail** is ticked, the
