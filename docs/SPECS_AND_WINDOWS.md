@@ -125,7 +125,9 @@ raise an obvious challenge.
 ### Possibly too wide
 
 Used when a process variable is an important model driver and historical values
-approach or exceed the supplied window.
+approach or exceed the supplied window. "Important" means a driver that passed
+the confidence gate (high or medium), not just a high combined score: the score
+is normalized per outcome, so some variable tops it even on noise.
 
 Interpretation:
 

@@ -12,6 +12,7 @@ from analysis.methods import (
     choose_pls_component_count,
     fit_feature_preprocessor,
     get_best_validation_r2,
+    get_evidence_methods,
     is_modelable_numeric_column,
     make_time_ordered_split,
     run_all_analyses,
@@ -73,6 +74,65 @@ def test_pure_noise_validation_scores_stay_below_the_usable_bar():
     )
 
     assert not np.isfinite(best_validation_r2) or best_validation_r2 < USABLE_VALIDATION_R2
+
+
+@pytest.mark.parametrize("seed", [6, 19, 28])
+def test_pure_noise_with_a_time_order_does_not_produce_high_drivers(seed):
+    """Noise datasets the size of a typical campaign, with a run order.
+
+    The gate used to take the best of four validation scores, including the R2
+    on a time-ordered test set of nine batches. That rescued these three of the
+    first 30 seeds - and 15 of the first 100 - into "high" drivers. Counting
+    PCA, which never sees the outcome, as agreement made it easier still. After
+    the fix, 1 of those 100 seeds still reaches "high", on a chance RF OOB R2
+    just over the bar: the gate bounds false confidence, it cannot remove it.
+    """
+    process_columns = [f"x{index}" for index in range(8)]
+    generator = np.random.default_rng(seed)
+    dataframe = pd.DataFrame({column: generator.normal(size=45) for column in process_columns})
+    dataframe["sequence"] = np.arange(45)
+    dataframe["yield_g_L"] = generator.normal(size=45)
+
+    ranked_drivers = run_all_analyses(
+        dataframe,
+        process_columns=process_columns,
+        outcome_columns=["yield_g_L"],
+        validation_order_column="sequence",
+    )["ranked_drivers"]
+
+    assert "high" not in set(ranked_drivers["confidence"])
+    assert not ranked_drivers["evidence_methods"].str.contains("PCA").any()
+
+
+def test_a_lucky_time_ordered_test_score_does_not_pass_the_gate():
+    pls_result = {
+        "q2": -0.13,
+        "time_ordered_validation": {"available": True, "test_r2": 0.365},
+    }
+    random_forest_result = {
+        "oob_r2": -0.13,
+        "time_ordered_validation": {"available": True, "test_r2": 0.05},
+    }
+
+    assert get_best_validation_r2(pls_result, random_forest_result) < USABLE_VALIDATION_R2
+
+
+def test_failing_the_latest_batches_caps_a_driver_at_medium():
+    assert (
+        assign_confidence(
+            combined_score=0.9,
+            evidence_methods=["PLS", "Random Forest"],
+            best_validation_r2=0.6,
+            rows_used=200,
+            time_ordered_test_r2=-0.2,
+        )
+        == "medium"
+    )
+
+
+def test_pca_alone_is_not_evidence_about_an_outcome():
+    assert get_evidence_methods(pca_score=1.0, pls_score=0.1, rf_score=0.1) == []
+    assert get_evidence_methods(pca_score=1.0, pls_score=0.1, rf_score=0.9) == ["Random Forest"]
 
 
 def test_planted_signal_still_earns_a_confident_label(synthetic_pipeline):

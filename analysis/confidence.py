@@ -6,7 +6,11 @@ from typing import Any
 
 import pandas as pd
 
-from analysis.methods import USABLE_VALIDATION_R2, get_best_validation_r2
+from analysis.methods import (
+    USABLE_VALIDATION_R2,
+    get_best_time_ordered_test_r2,
+    get_best_validation_r2,
+)
 
 
 MODEL_SCORE_THRESHOLDS = {
@@ -43,7 +47,7 @@ def build_driver_confidence_breakdown(
         score_component(
             "PCA context",
             classify_score(float(ranked_driver_row.get("pca_score", 0.0))),
-            "Overall process-variation signal; useful context, not outcome-specific proof.",
+            "Overall process-variation signal; context only, never counted as agreement.",
         ),
         score_component(
             "Model validation",
@@ -111,18 +115,29 @@ def summarize_model_validation(analysis_results: dict[str, Any], outcome: str) -
     rf_test = format_score(rf_result.get("time_ordered_validation", {}).get("test_r2"))
 
     best_validation_r2 = get_best_validation_r2(pls_result, rf_result)
-    gate_note = (
-        "No model predicted held-out batches well enough "
-        f"(best {format_score(best_validation_r2)} < {USABLE_VALIDATION_R2}), "
-        "so every driver for this outcome is capped at exploratory."
-        if not (
-            best_validation_r2 is not None
-            and pd.notna(best_validation_r2)
-            and float(best_validation_r2) >= USABLE_VALIDATION_R2
+    time_ordered_test_r2 = get_best_time_ordered_test_r2(pls_result, rf_result)
+    if not (
+        best_validation_r2 is not None
+        and pd.notna(best_validation_r2)
+        and float(best_validation_r2) >= USABLE_VALIDATION_R2
+    ):
+        gate_note = (
+            "Neither PLS Q2 nor RF OOB R2 shows the models predicting held-out batches "
+            f"(best {format_score(best_validation_r2)} < {USABLE_VALIDATION_R2}), "
+            "so every driver for this outcome is capped at exploratory."
         )
-        else f"Best held-out score {format_score(best_validation_r2)} clears the "
-        f"{USABLE_VALIDATION_R2} bar needed for a confident label."
-    )
+    elif time_ordered_test_r2 is not None and time_ordered_test_r2 < USABLE_VALIDATION_R2:
+        gate_note = (
+            f"Best of Q2/OOB {format_score(best_validation_r2)} clears the "
+            f"{USABLE_VALIDATION_R2} bar, but neither model predicts the latest batches "
+            f"(time-ordered test R2 {format_score(time_ordered_test_r2)}), so no driver "
+            "for this outcome is rated above medium."
+        )
+    else:
+        gate_note = (
+            f"Best of Q2/OOB {format_score(best_validation_r2)} clears the "
+            f"{USABLE_VALIDATION_R2} bar needed for a confident label."
+        )
 
     return (
         f"PLS Q2 {pls_q2} (mean across folds); RF OOB R2 {rf_oob}; "

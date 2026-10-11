@@ -232,6 +232,7 @@ def assess_specs(
         )
 
     driver_lookup = build_driver_lookup(ranked_drivers)
+    validated_driver_lookup = build_driver_lookup(ranked_drivers, validated_only=True)
     confounded_variables = get_confounded_variables(audit_result)
 
     summary_rows = []
@@ -255,6 +256,7 @@ def assess_specs(
             driver_score=driver_score,
             confounded=variable_name in confounded_variables,
             zone_series=zone_series,
+            validated_driver_score=validated_driver_lookup.get(variable_name, np.nan),
         )
         summary_rows.append(summary)
 
@@ -370,6 +372,7 @@ def build_variable_summary_row(
     driver_score: float,
     confounded: bool,
     zone_series: pd.Series,
+    validated_driver_score: float = np.nan,
 ) -> dict[str, Any]:
     """Build one row for the spec challenge table."""
     variable_name = spec_row["variable"]
@@ -427,6 +430,7 @@ def build_variable_summary_row(
         target=target,
         mean_value=usable_values.mean() if count else np.nan,
         allowed_range=allowed_range,
+        validated_driver_score=validated_driver_score,
     )
 
     return {
@@ -476,8 +480,15 @@ def classify_spec_window(
     target: float,
     mean_value: float,
     allowed_range: float,
+    validated_driver_score: float = np.nan,
 ) -> tuple[str, str, int]:
-    """Return a conservative spec challenge classification."""
+    """Return a conservative spec challenge classification.
+
+    "Possibly too wide" calls the variable a strong model driver, so it uses
+    ``validated_driver_score`` - the score from drivers the confidence gate let
+    through - rather than the raw ``driver_score``, which tops 0.55 for some
+    variable on almost any data, noise included.
+    """
     if limit_kind == "no_limits":
         return (
             "Reference only",
@@ -525,7 +536,9 @@ def classify_spec_window(
             6,
         )
 
-    high_driver = pd.notna(driver_score) and driver_score >= IMPORTANT_DRIVER_THRESHOLD
+    high_driver = (
+        pd.notna(validated_driver_score) and validated_driver_score >= IMPORTANT_DRIVER_THRESHOLD
+    )
     low_driver = pd.notna(driver_score) and driver_score < LOW_DRIVER_THRESHOLD
     near_or_outside = percent_close_to_limit >= 15 or percent_outside > 0
 
@@ -767,10 +780,23 @@ def describe_capability_basis(limit_kind: str, ppk: float | None) -> str:
     return "not_calculated"
 
 
-def build_driver_lookup(ranked_drivers: pd.DataFrame | None) -> dict[str, float]:
-    """Return max combined score per process variable."""
+def build_driver_lookup(
+    ranked_drivers: pd.DataFrame | None,
+    validated_only: bool = False,
+) -> dict[str, float]:
+    """Return max combined score per process variable.
+
+    With ``validated_only``, rows the confidence gate left at "exploratory" are
+    ignored. The combined score is normalized per outcome, so some variable
+    scores near the top even on pure noise; only a gated label says an outcome
+    model actually predicted held-out batches.
+    """
     if ranked_drivers is None or ranked_drivers.empty:
         return {}
+    if validated_only:
+        if "confidence" not in ranked_drivers.columns:
+            return {}
+        ranked_drivers = ranked_drivers[ranked_drivers["confidence"].isin(["high", "medium"])]
     grouped = ranked_drivers.groupby("process_variable")["combined_score"].max()
     return grouped.to_dict()
 

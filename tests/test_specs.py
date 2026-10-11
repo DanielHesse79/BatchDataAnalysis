@@ -9,6 +9,7 @@ from analysis.specs import (
     assess_specs,
     build_out_of_spec_rows,
     calculate_capability,
+    classify_spec_window,
 )
 
 
@@ -39,6 +40,30 @@ def test_mock_specs_flag_planted_window_and_qc_problems(mock_spec_pipeline):
     assert neutralization_ph["classification"] == "Target may be off-center"
     assert not spec_assessment.out_of_spec_batches.empty
     assert "moisture_percent" in spec_assessment.out_of_spec_batches["variable"].tolist()
+
+
+def classify_process_window(**overrides):
+    arguments = {
+        "role": "process",
+        "count": 60,
+        "limit_kind": "two_sided",
+        "percent_outside": 5.0,
+        "percent_close_to_limit": 20.0,
+        "used_range_ratio": 0.9,
+        "driver_score": 0.9,
+        "confounded": False,
+        "target": np.nan,
+        "mean_value": 10.0,
+        "allowed_range": 4.0,
+    }
+    arguments.update(overrides)
+    return classify_spec_window(**arguments)[0]
+
+
+def test_an_unvalidated_top_score_is_not_called_a_strong_driver():
+    """The combined score tops 0.55 for some variable on almost any data, noise included."""
+    assert classify_process_window() != "Possibly too wide"
+    assert classify_process_window(validated_driver_score=0.9) == "Possibly too wide"
 
 
 def test_spec_assessment_reports_unmatched_rows_without_crashing(mock_spec_pipeline):

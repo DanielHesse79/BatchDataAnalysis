@@ -1198,6 +1198,7 @@ def combine_ranked_drivers(
         pls_scores = pls_result["variable_importance"][["process_variable", "pls_score"]]
         rf_scores = random_forest_result["variable_importance"][["process_variable", "rf_score"]]
         best_validation_r2 = get_best_validation_r2(pls_result, random_forest_result)
+        time_ordered_test_r2 = get_best_time_ordered_test_r2(pls_result, random_forest_result)
         rows_used = int(random_forest_result.get("n_rows_used") or 0) or None
 
         merged_scores = pca_scores.merge(pls_scores, on="process_variable", how="outer")
@@ -1223,6 +1224,7 @@ def combine_ranked_drivers(
                         evidence_methods,
                         best_validation_r2=best_validation_r2,
                         rows_used=rows_used,
+                        time_ordered_test_r2=time_ordered_test_r2,
                     ),
                     "evidence_methods": ", ".join(evidence_methods) if evidence_methods else "none",
                     "pca_score": pca_score,
@@ -1257,10 +1259,16 @@ def combine_ranked_drivers(
 
 
 def get_evidence_methods(pca_score: float, pls_score: float, rf_score: float) -> list[str]:
-    """Return method names that consider a variable important."""
+    """Return the outcome models that consider a variable important.
+
+    PCA is not one of them. It never sees the outcome, so a high PCA score says
+    the variable moves a lot, not that it moves with quality - and on ordinary
+    data almost every variable clears the threshold. Counting it let a variable
+    reach "high" on PCA plus Random Forest, and "medium" on PCA alone with no
+    outcome model behind it at all. ``pca_score`` stays in the signature, and in
+    the combined score, as context.
+    """
     evidence_methods = []
-    if pca_score >= IMPORTANT_SIGNAL_THRESHOLD:
-        evidence_methods.append("PCA")
     if pls_score >= IMPORTANT_SIGNAL_THRESHOLD:
         evidence_methods.append("PLS")
     if rf_score >= IMPORTANT_SIGNAL_THRESHOLD:
@@ -1273,6 +1281,7 @@ def assign_confidence(
     evidence_methods: list[str],
     best_validation_r2: float | None = None,
     rows_used: int | None = None,
+    time_ordered_test_r2: float | None = None,
 ) -> str:
     """Assign a readable confidence label from agreement, validation, and sample size.
 
@@ -1280,6 +1289,10 @@ def assign_confidence(
     scores 1.0 for each method - even on pure noise. Agreement alone would then
     label a random variable "high", so a label above "exploratory" also requires
     a model that actually predicts held-out data.
+
+    ``time_ordered_test_r2`` can only lower the label. A model that passes the
+    resampled gate but cannot predict the latest batches is describing a
+    process that may have moved on, which is not "high" confidence.
     """
     evidence_count = len(evidence_methods)
 
@@ -1302,6 +1315,14 @@ def assign_confidence(
     if label == "high" and rows_used is not None and rows_used < SMALL_SAMPLE_ROW_COUNT:
         return "medium"
 
+    if (
+        label == "high"
+        and time_ordered_test_r2 is not None
+        and np.isfinite(time_ordered_test_r2)
+        and time_ordered_test_r2 < USABLE_VALIDATION_R2
+    ):
+        return "medium"
+
     return label
 
 
@@ -1309,14 +1330,34 @@ def get_best_validation_r2(
     pls_result: dict[str, Any],
     random_forest_result: dict[str, Any],
 ) -> float:
-    """Return the strongest honest validation score available for an outcome.
+    """Return the validation score that gates confidence labels for an outcome.
 
-    Training R2 is deliberately excluded: it is not evidence that the model
-    generalizes.
+    Only PLS Q2 and Random Forest OOB R2 count, because both are estimated over
+    every batch. Training R2 is excluded because it is not evidence that the
+    model generalizes. The time-ordered test R2 is excluded as well: its test
+    set is the latest fifth of the batches, eight or nine in a typical dataset,
+    and taking the best of four noisy scores let one pure-noise dataset in ten
+    through with "high" drivers. It can still lower a label; see
+    ``assign_confidence``.
     """
     candidate_scores = [
         pls_result.get("q2"),
         random_forest_result.get("oob_r2"),
+    ]
+    usable_scores = [
+        float(score)
+        for score in candidate_scores
+        if score is not None and np.isfinite(float(score))
+    ]
+    return max(usable_scores) if usable_scores else np.nan
+
+
+def get_best_time_ordered_test_r2(
+    pls_result: dict[str, Any],
+    random_forest_result: dict[str, Any],
+) -> float | None:
+    """Return the better time-ordered test R2, or None when neither model has one."""
+    candidate_scores = [
         get_time_ordered_test_r2(pls_result),
         get_time_ordered_test_r2(random_forest_result),
     ]
@@ -1325,7 +1366,7 @@ def get_best_validation_r2(
         for score in candidate_scores
         if score is not None and np.isfinite(float(score))
     ]
-    return max(usable_scores) if usable_scores else np.nan
+    return max(usable_scores) if usable_scores else None
 
 
 def get_time_ordered_test_r2(method_result: dict[str, Any]) -> float | None:

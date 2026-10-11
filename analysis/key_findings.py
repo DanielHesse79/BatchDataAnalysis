@@ -12,6 +12,7 @@ from typing import Any
 import pandas as pd
 
 from analysis.evidence import build_report_pack
+from analysis.methods import USABLE_VALIDATION_R2
 
 
 KEY_FINDING_COLUMNS = [
@@ -260,8 +261,13 @@ def finding_row(
     }
 
 
-def score_is_usable(value: Any, threshold: float = 0.15) -> bool:
-    """Return whether a validation metric gives at least weak support."""
+def score_is_usable(value: Any, threshold: float = USABLE_VALIDATION_R2) -> bool:
+    """Return whether a validation metric gives at least weak support.
+
+    The bar and the metrics (Q2, OOB) are the confidence gate's own, so this
+    caution appears exactly when every driver for the outcome is capped at
+    exploratory - never next to a "high" driver.
+    """
     try:
         if pd.isna(value):
             return False

@@ -248,8 +248,21 @@ The basic idea:
 - PCA contributes exploratory structure evidence.
 - PLS contributes linear supervised evidence.
 - Random Forest contributes non-linear supervised evidence.
-- Variables that appear important across multiple methods get higher
-  confidence.
+- Variables that PLS and Random Forest both rank highly get higher confidence.
+
+PCA adds a little to the combined score but never counts as agreement. It does
+not see the outcome, so a high PCA score means a variable varies a lot, not that
+it varies with quality, and on ordinary data almost every variable has one.
+
+A label above "exploratory" also needs a model that predicts batches it was not
+fitted on. Method scores are normalized per outcome, so some variable always
+tops the ranking, even on pure noise. The gate is PLS Q2 or Random Forest OOB
+R2 of at least 0.15. Both are estimated over every batch. The time-ordered test
+R2 does not count toward the gate, because its test set is the latest fifth of
+the batches, often eight or nine. Taking the best of all four scores let 15 of
+100 pure-noise datasets through with "high" drivers; the current gate lets 1
+through. A failing time-ordered test can still lower a label: when neither
+model predicts the latest batches, no driver is rated above medium.
 
 Confidence levels are not regulatory validation. They are a practical guide for
 which findings deserve attention first.
